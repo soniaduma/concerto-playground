@@ -26,6 +26,30 @@
   opacity: 0.75;
 }
 
+/* Custom playground hint shown under the official Concerto message.
+   The hint text itself lives in src/utils/errorHints.ts. */
+.error-banner-hint {
+  margin-top: 4px;
+  color: #fbd38d;
+}
+
+/* Compiler-style excerpt of the offending line with a caret. */
+.error-banner-code {
+  margin: 6px 0;
+  font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+  color: #fed7d7;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* One row per issue when several problems are listed at once. */
+.error-banner-item {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+
 /* Graph view variant: floats over the canvas; pointer events pass through
    so nodes under the banner stay clickable and draggable. */
 .error-banner-overlay {

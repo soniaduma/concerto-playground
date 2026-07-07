@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import type { ConcertoModel, Declaration, Property } from '../../utils/graph/types';
 import { parseCto, describeParseError } from '../../utils/graph/ctoToGraph';
+import { findErrorHint } from '../../utils/errorHints';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import { PropertyTree } from './PropertyTree';
 import { PropertySheet } from './PropertySheet';
@@ -35,13 +36,14 @@ export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamesp
   // re-run the parser for every namespace.
   const { parsedModels, parseErrors } = useMemo(() => {
     const parsed: Record<string, ConcertoModel> = {};
-    const errors: Array<{ ns: string; message: string }> = [];
+    const errors: Array<{ ns: string; message: string; hint: string | null }> = [];
     for (const [ns, cto] of Object.entries(models)) {
       if (!cto) continue;
       try {
         parsed[ns] = parseCto(cto);
       } catch (e) {
-        errors.push({ ns, message: describeParseError(e) });
+        const message = describeParseError(e);
+        errors.push({ ns, message, hint: findErrorHint(message, cto) });
       }
     }
     return { parsedModels: parsed, parseErrors: errors };
@@ -108,9 +110,10 @@ export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamesp
               ? 'One namespace has a syntax error and is hidden from the form:'
               : `${parseErrors.length} namespaces have syntax errors and are hidden from the form:`}
           </div>
-          {parseErrors.map(({ ns, message }) => (
+          {parseErrors.map(({ ns, message, hint }) => (
             <div key={ns} className="error-banner-message">
               <strong>{ns}</strong>: {message}
+              {hint && <div className="error-banner-hint">Hint: {hint}</div>}
             </div>
           ))}
           <div className="error-banner-note">
