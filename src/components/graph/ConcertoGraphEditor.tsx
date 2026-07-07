@@ -23,7 +23,10 @@ import { FloatingEdge } from './FloatingEdge';
 import { GraphToolbar } from './GraphToolbar';
 import { NodeSearch } from './NodeSearch';
 import { useFocusNode } from './useFocusNode';
-import { parseCto, declarationsToGraph } from '../../utils/graph/ctoToGraph';
+import { parseCto, declarationsToGraph, describeParseError } from '../../utils/graph/ctoToGraph';
+import { findErrorHint, locateCulprit, buildErrorSnippet } from '../../utils/errorHints';
+import type { SemanticIssue } from '../../utils/semanticErrors';
+import '../errors.css';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import type { Declaration, ConcertoModel } from '../../utils/graph/types';
 
@@ -47,6 +50,10 @@ interface ConcertoGraphEditorProps {
   onExport: () => void;
   /** When this changes, the graph centers on and highlights the named node. */
   focusRequest?: { name: string; ts: number } | null;
+  /** Semantic validation error for the current model (from validateCto). */
+  validationError?: string | null;
+  /** All semantic issues found by the sweep, listed together in the banner. */
+  semanticIssues?: SemanticIssue[];
 }
 
 interface HistoryEntry {
@@ -57,13 +64,16 @@ interface HistoryEntry {
 
 const MAX_HISTORY = 50;
 
-export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText, onImport, onExport, focusRequest }: ConcertoGraphEditorProps) {
+export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText, onImport, onExport, focusRequest, validationError, semanticIssues }: ConcertoGraphEditorProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [model, setModelState] = useState<ConcertoModel>({ namespace: 'org.example@1.0.0', imports: [], declarations: [] });
   const modelRef = useRef(model);
   const setModel = useCallback((m: ConcertoModel) => { modelRef.current = m; setModelState(m); }, []);
+  const [parseError, setParseError] = useState<{ message: string; hint: string | null; snippet: string | null } | null>(null);
+  const parseErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [semanticError, setSemanticError] = useState<{ message: string; hint: string | null; location: string | null; issues: SemanticIssue[] } | null>(null);
   const [activeDialog, setActiveDialog] = useState<{ type: 'property' | 'enum-value' | 'inheritance'; declName: string } | null>(null);
   const [connectDialog, setConnectDialog] = useState<{ sourceId: string; targetId: string } | null>(null);
   const updatingFromGraph = useRef(false);
@@ -73,6 +83,42 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   const isUndoRedo = useRef(false);
 
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+
+  const clearParseError = useCallback(() => {
+    if (parseErrorTimer.current) {
+      clearTimeout(parseErrorTimer.current);
+      parseErrorTimer.current = null;
+    }
+    setParseError(null);
+  }, []);
+
+  useEffect(() => () => {
+    if (parseErrorTimer.current) clearTimeout(parseErrorTimer.current);
+  }, []);
+
+  // Debounced copy of the semantic validation error, shown in the overlay
+  // banner when the text parses but the model is invalid (e.g. a property
+  // referencing an undeclared type). Clearing is immediate.
+  useEffect(() => {
+    if (!validationError) {
+      setSemanticError(null);
+      return;
+    }
+    const message = validationError;
+    const issues = semanticIssues ?? [];
+    const timer = setTimeout(() => {
+      // Semantic messages carry no position, so point at the first line where
+      // the name they complain about appears in the text.
+      const culprit = locateCulprit(message, cto);
+      setSemanticError({
+        message,
+        hint: findErrorHint(message, cto),
+        location: culprit ? `See line ${culprit.line} on the left.` : null,
+        issues,
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [validationError, cto, semanticIssues]);
 
   useEffect(() => {
     for (const node of nodes) {
@@ -109,10 +155,19 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
         pushHistory({ model: parsed, nodes: nodesWithPositions, edges: graph.edges });
       }
       isUndoRedo.current = false;
-    } catch {
-      // Ignore parse errors while user is typing — keep last valid graph state
+      clearParseError();
+    } catch (e) {
+      // Keep the last valid graph on screen while the user is typing, but
+      // report the parse error in an overlay banner instead of dropping it.
+      // The banner is debounced so it does not flash on every keystroke
+      // while a declaration is being typed out.
+      const message = describeParseError(e);
+      const hint = findErrorHint(message, cto);
+      const snippet = buildErrorSnippet(message, cto);
+      if (parseErrorTimer.current) clearTimeout(parseErrorTimer.current);
+      parseErrorTimer.current = setTimeout(() => setParseError({ message, hint, snippet }), 600);
     }
-  }, [cto, setNodes, setEdges]);
+  }, [cto, setNodes, setEdges, clearParseError]);
 
   const updateModelAndSync = useCallback((newDeclarations: Declaration[]) => {
     const cur = modelRef.current;
@@ -127,9 +182,12 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     setNodes(nodesWithPositions);
     setEdges(graph.edges);
     pushHistory({ model: newModel, nodes: nodesWithPositions, edges: graph.edges });
+    // A graph edit regenerates the CTO from the last valid model, so any
+    // pending text parse error is now stale.
+    clearParseError();
     updatingFromGraph.current = true;
     onModelChange?.(newCto);
-  }, [setModel, setNodes, setEdges, onModelChange, pushHistory]);
+  }, [setModel, setNodes, setEdges, onModelChange, pushHistory, clearParseError]);
 
   const handleAddDeclaration = useCallback((decl: Declaration) => {
     updateModelAndSync([...modelRef.current.declarations, decl]);
@@ -205,9 +263,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     for (const node of entry.nodes) {
       nodePositionsRef.current.set(node.id, { ...node.position });
     }
+    clearParseError();
     updatingFromGraph.current = true;
     onModelChange?.(declarationsToCto(entry.model));
-  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
+  }, [history, historyIndex, setNodes, setEdges, onModelChange, clearParseError]);
 
   const handleRedo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
@@ -221,9 +280,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     for (const node of entry.nodes) {
       nodePositionsRef.current.set(node.id, { ...node.position });
     }
+    clearParseError();
     updatingFromGraph.current = true;
     onModelChange?.(declarationsToCto(entry.model));
-  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
+  }, [history, historyIndex, setNodes, setEdges, onModelChange, clearParseError]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -254,6 +314,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
+
+  // Parse errors win over semantic ones: unparseable text cannot be
+  // semantically validated anyway, so the parse message is the actionable one.
+  const bannerError = parseError ?? semanticError;
 
   const onNodeDragStop = useCallback((_event: React.MouseEvent, _node: Node) => {
     const currentNodes = nodes.map((n) => {
@@ -337,6 +401,40 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
            <Controls />
           <Background variant={BackgroundVariant.Dots} color="#4a5568" gap={20} size={1} />
         </ReactFlow>
+
+        {bannerError && (
+          <div role="alert" className="error-banner error-banner-overlay">
+            <div className="error-banner-title">
+              {parseError
+                ? 'Schema parse error'
+                : semanticError && semanticError.issues.length > 1
+                  ? `Schema errors (${semanticError.issues.length})`
+                  : 'Schema error'}
+            </div>
+            {!parseError && semanticError && semanticError.issues.length > 0 ? (
+              semanticError.issues.map((issue, i) => (
+                <div key={i} className="error-banner-item">
+                  {issue.line !== null && <strong>Line {issue.line}: </strong>}
+                  {issue.text}
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="error-banner-message">{bannerError.message}</div>
+                {parseError?.snippet && <pre className="error-banner-code">{parseError.snippet}</pre>}
+                {bannerError.hint && <div className="error-banner-hint">Hint: {bannerError.hint}</div>}
+              </>
+            )}
+            {parseError && (
+              <div className="error-banner-note">
+                Showing the last valid graph. Fix the text on the left to update it.
+              </div>
+            )}
+            {!parseError && semanticError?.location && semanticError.issues.length === 0 && (
+              <div className="error-banner-note">{semanticError.location}</div>
+            )}
+          </div>
+        )}
 
         <FocusController focusRequest={focusRequest} />
 

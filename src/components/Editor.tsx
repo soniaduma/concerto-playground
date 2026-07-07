@@ -1,6 +1,9 @@
 import MonacoEditor, { useMonaco, type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
+import { extractCulpritName } from "../utils/errorHints";
+import { computeQuickFixes } from "../utils/quickFixes";
+import type { SemanticIssue } from "../utils/semanticErrors";
 
 interface EditorProps {
   value: string;
@@ -10,6 +13,8 @@ interface EditorProps {
   height?: string;
   /** Validation error string — shown as a red squiggle at the reported line/column */
   error?: string | null;
+  /** All semantic issues found by the sweep; each gets its own marker. */
+  issues?: SemanticIssue[];
   /** Declared type names to render as clickable references. */
   linkTargets?: string[];
   /** Called with the type name when a clickable reference is clicked. */
@@ -113,6 +118,50 @@ const setupMonaco: BeforeMount = (monacoInstance) => {
     },
   });
 
+  // Quick fixes (the lightbulb) for the error markers set below. The actual
+  // repairs are computed by the pure computeQuickFixes helper.
+  monacoInstance.languages.registerCodeActionProvider("concerto", {
+    provideCodeActions(
+      model: monaco.editor.ITextModel,
+      _range: monaco.Range,
+      context: monaco.languages.CodeActionContext,
+    ) {
+      const source = model.getValue();
+      const actions: monaco.languages.CodeAction[] = [];
+      const seen = new Set<string>();
+      for (const marker of context.markers) {
+        for (const fix of computeQuickFixes(marker.message, source)) {
+          const key = fix.title + JSON.stringify(fix.edit);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          actions.push({
+            title: fix.title,
+            kind: "quickfix",
+            diagnostics: [marker],
+            edit: {
+              edits: [
+                {
+                  resource: model.uri,
+                  versionId: model.getVersionId(),
+                  textEdit: {
+                    range: {
+                      startLineNumber: fix.edit.startLine,
+                      startColumn: fix.edit.startColumn,
+                      endLineNumber: fix.edit.endLine,
+                      endColumn: fix.edit.endColumn,
+                    },
+                    text: fix.edit.text,
+                  },
+                },
+              ],
+            },
+          });
+        }
+      }
+      return { actions, dispose() {} };
+    },
+  });
+
   // ── concerto-dark theme ─────────────────────────────────────────────────────
   // Colours match the graph node palette from ui-concerto-editor (CtoEditor.tsx)
   monacoInstance.editor.defineTheme("concerto-dark", {
@@ -160,6 +209,7 @@ export function Editor({
   language = "concerto",
   height = "100%",
   error = null,
+  issues,
   linkTargets,
   onNavigate,
 }: EditorProps) {
@@ -220,22 +270,73 @@ export function Editor({
     if (error) {
       // Parse "Line N column M" from the error message (Concerto parser format)
       const match = error.match(/[Ll]ine\s+(\d+)\s+col(?:umn)?\s+(\d+)/);
-      const lineNumber = match ? parseInt(match[1], 10) : 1;
-      const col = match ? parseInt(match[2], 10) : 1;
-      monacoInstance.editor.setModelMarkers(model, "concerto", [
-        {
-          startLineNumber: lineNumber,
-          startColumn: Math.max(1, col - 1),
-          endLineNumber: lineNumber,
-          endColumn: col + 2,
-          message: error,
-          severity: monaco.MarkerSeverity.Error,
-        },
-      ]);
+      let markers: monaco.editor.IMarkerData[] = [];
+      if (match) {
+        const lineNumber = parseInt(match[1], 10);
+        const col = parseInt(match[2], 10);
+        markers = [
+          {
+            startLineNumber: lineNumber,
+            startColumn: Math.max(1, col - 1),
+            endLineNumber: lineNumber,
+            endColumn: col + 2,
+            message: error,
+            severity: monaco.MarkerSeverity.Error,
+          },
+        ];
+      } else {
+        // Semantic validator messages carry no position. Prefer the sweep's
+        // issue list (one precisely placed marker per problem, each carrying
+        // its own personalized message so quick fixes stay specific).
+        if (issues && issues.length > 0) {
+          markers = issues
+            .filter((issue) => issue.line !== null && issue.line <= model.getLineCount())
+            .map((issue) => {
+              const lineContent = model.getLineContent(issue.line as number);
+              const col = lineContent.indexOf(issue.name) + 1 || 1;
+              return {
+                startLineNumber: issue.line as number,
+                startColumn: col,
+                endLineNumber: issue.line as number,
+                endColumn: col + issue.name.length,
+                message: issue.text,
+                severity: monaco.MarkerSeverity.Error,
+              };
+            });
+        }
+        // Otherwise mark every occurrence of the name the official message
+        // complains about, instead of pointing at line 1.
+        const culprit = markers.length === 0 ? extractCulpritName(error) : null;
+        if (culprit) {
+          markers = model
+            .findMatches(`\\b${culprit}\\b`, false, true, true, null, false)
+            .map((m) => ({
+              startLineNumber: m.range.startLineNumber,
+              startColumn: m.range.startColumn,
+              endLineNumber: m.range.endLineNumber,
+              endColumn: m.range.endColumn,
+              message: error,
+              severity: monaco.MarkerSeverity.Error,
+            }));
+        }
+        if (markers.length === 0) {
+          markers = [
+            {
+              startLineNumber: 1,
+              startColumn: 1,
+              endLineNumber: 1,
+              endColumn: 3,
+              message: error,
+              severity: monaco.MarkerSeverity.Error,
+            },
+          ];
+        }
+      }
+      monacoInstance.editor.setModelMarkers(model, "concerto", markers);
     } else {
       monacoInstance.editor.setModelMarkers(model, "concerto", []);
     }
-  }, [error, monacoInstance, editorReady]);
+  }, [error, issues, monacoInstance, editorReady]);
 
   return (
     <MonacoEditor

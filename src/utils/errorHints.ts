@@ -1,0 +1,250 @@
+// Friendly hints layered on top of the official Concerto error messages.
+//
+// ALL custom (non-official) error text in the playground lives in this file,
+// in the HINT_RULES list below. The error banners always show the official
+// parser/validator message untouched; when a rule here recognises the
+// situation, its hint is shown as an extra line prefixed with "Hint:".
+// Removing a rule (or this whole file) falls back to official messages only.
+//
+// Rules are matched against the official message text and, where needed, the
+// offending source line and the kind of declaration it sits in (both located
+// via the "line N column M" position that Concerto errors carry). First
+// matching rule wins, so keep the more specific rules first.
+
+export interface EnclosingDeclaration {
+  kind: string;
+  name: string | null;
+}
+
+interface HintInfo {
+  message: string;
+  line: string;
+  context: EnclosingDeclaration | null;
+}
+
+interface HintRule {
+  id: string;
+  when: (message: string, offendingLine: string, context: EnclosingDeclaration | null) => boolean;
+  hint: string | ((info: HintInfo) => string);
+}
+
+// Turns "Contracting party legal" into "ContractingPartyLegal".
+function joinWords(words: string[]): string {
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+}
+
+const DECLARATION_KEYWORDS = 'abstract|asset|concept|enum|event|map|participant|scalar|transaction';
+
+export const DECLARATION_START = new RegExp(
+  `^\\s*(?:abstract\\s+)?(${DECLARATION_KEYWORDS})\\b(?:\\s+([A-Za-z_$][\\w$]*))?`
+);
+
+/**
+ * For a declaration line whose name contains spaces, suggests the joined
+ * single-word name, e.g. "Contracting party" becomes "ContractingParty".
+ * The column points at the start of the original name in the line.
+ */
+export function suggestJoinedName(line: string): { original: string; joined: string; column: number } | null {
+  const m = line.match(
+    new RegExp(`^\\s*(?:abstract\\s+)?(?:${DECLARATION_KEYWORDS})\\s+([A-Za-z_$][\\w$]*(?:\\s+[A-Za-z_$][\\w$]*)+)`)
+  );
+  if (!m) return null;
+  let words = m[1].split(/\s+/);
+  const stop = words.findIndex((w) => w === 'extends' || w === 'identified');
+  if (stop >= 0) words = words.slice(0, stop);
+  if (words.length < 2) return null;
+  const original = words.join(' ');
+  return { original, joined: joinWords(words), column: line.indexOf(words[0]) + 1 };
+}
+
+// Walks upward from the error line to the nearest declaration keyword and
+// returns its kind and name ("enum GoverningLaw"), or null when the error is
+// not inside a declaration body (a closing brace is found first).
+export function enclosingDeclaration(sourceLines: string[], errorLine: number): EnclosingDeclaration | null {
+  for (let i = errorLine - 2; i >= 0; i--) {
+    const line = sourceLines[i];
+    const decl = line.match(DECLARATION_START);
+    if (decl) return { kind: decl[1], name: decl[2] ?? null };
+    if (/^\s*}/.test(line)) return null;
+  }
+  return null;
+}
+
+// Matches "concept Some Name" style lines: a declaration keyword, a name,
+// then another identifier that is not one of the valid follow-up keywords.
+const NAME_WITH_SPACE = new RegExp(
+  `^\\s*(?:abstract\\s+)?(?:${DECLARATION_KEYWORDS})\\s+[A-Za-z_$][\\w$]*\\s+(?!extends\\b|identified\\b)[A-Za-z_$]`
+);
+
+const HINT_RULES: HintRule[] = [
+  {
+    id: 'unclosed-declaration-above',
+    // A new declaration keyword while still inside a body: the declaration
+    // above the error was never closed.
+    when: (_m, line, ctx) => ctx !== null && DECLARATION_START.test(line),
+    hint: ({ context }) =>
+      context?.name
+        ? `The ${context.kind} "${context.name}" above is missing its closing "}". Close it before starting a new declaration.`
+        : 'The declaration above is missing its closing "}". Close it before starting a new declaration.',
+  },
+  {
+    id: 'enum-value-with-type',
+    when: (m, line, ctx) => ctx?.kind === 'enum' && /^\s*o\s+\w+\s+\w+/.test(line) && m.includes('"o"'),
+    hint: ({ line }) => {
+      const m = line.match(/^\s*o\s+([\w$]+)\s+([\w$]+)/);
+      return m
+        ? `Enum values are just names, without a type: write "o ${m[2]}", not "o ${m[1]} ${m[2]}".`
+        : 'Enum values are just names, without a type: write "o ACTIVE", not "o String ACTIVE".';
+    },
+  },
+  {
+    id: 'relationship-in-enum',
+    when: (_m, line, ctx) => ctx?.kind === 'enum' && /^\s*-->/.test(line),
+    hint: 'Relationships ("-->") are not allowed inside an enum. An enum body only lists values, like "o ACTIVE".',
+  },
+  {
+    id: 'scalar-missing-extends',
+    when: (m) => m.includes('"extends"') && !m.includes('"identified by"'),
+    hint: ({ line }) => {
+      const name = line.match(/scalar\s+([\w$]+)/)?.[1] ?? 'SSN';
+      return `A scalar has no body of its own; it must extend a primitive type: "scalar ${name} extends String".`;
+    },
+  },
+  {
+    id: 'missing-declaration-name',
+    when: (m) => m.includes('identifier') && m.includes('but "{" found'),
+    hint: ({ line }) => {
+      const kw = line.match(DECLARATION_START)?.[1] ?? 'concept';
+      return `The declaration has no name. Write one between "${kw}" and the brace, e.g. "${kw} Person {".`;
+    },
+  },
+  {
+    id: 'declaration-name-with-space',
+    when: (m, line) => m.startsWith('Expected "{",') && NAME_WITH_SPACE.test(line),
+    hint: ({ line }) => {
+      const s = suggestJoinedName(line);
+      return s
+        ? `A declaration name must be a single word. Rename "${s.original}" to "${s.joined}".`
+        : 'A declaration name must be a single word. Join the words together: "ContractingParty" instead of "Contracting party".';
+    },
+  },
+  {
+    id: 'missing-open-brace',
+    when: (m) => m.includes('"extends"') && m.includes('"identified by"'),
+    hint: 'The body of this declaration never opens. Add "{" after its name, or continue the name with "extends" or "identified by".',
+  },
+  {
+    id: 'missing-property-name',
+    when: (m) => m.includes('"[]"') && m.includes('but "}" found'),
+    hint: 'The property has a type but no name. Add one after the type: "o String firstName".',
+  },
+  {
+    id: 'property-outside-declaration',
+    // A property or enum-value line at the top level: the declaration above
+    // it was closed too early.
+    when: (m, line, ctx) => ctx === null && /^\s*(o\s|-->)/.test(line) && m.includes('"concept"'),
+    hint: 'This line sits outside any declaration; the "}" above it closes the declaration too early. Move that "}" below these lines.',
+  },
+  {
+    id: 'extra-closing-brace',
+    when: (m) => m.includes('but "}" found') && m.includes('"concept"'),
+    hint: 'This "}" closes nothing. Delete it, or check whether a declaration above it is missing its opening "{".',
+  },
+  {
+    id: 'missing-closing-brace',
+    when: (m) => m.includes('but end of input found') && m.includes('"}"'),
+    hint: 'The file ends while a declaration is still open. Add the missing "}" to close it.',
+  },
+  {
+    id: 'missing-property-prefix',
+    when: (m) => m.includes('"-->"') && m.includes('"o"') && !m.includes('end of input'),
+    hint: ({ line }) => {
+      const body = line.trim();
+      return body
+        ? `Every property line starts with a marker: write "o ${body}" for a value, or "--> ${body}" for a relationship.`
+        : 'Every property line starts with a marker: "o" for a value ("o String name") or "-->" for a relationship.';
+    },
+  },
+  {
+    id: 'missing-namespace',
+    when: (m) => m.includes('"namespace"'),
+    hint: 'The file needs a namespace before anything else. Add one as the first line: "namespace org.example@1.0.0".',
+  },
+  {
+    id: 'undeclared-type',
+    when: (m) => m.includes('Undeclared type'),
+    hint: 'The property named in the message still references this type. Either declare or restore the type (or import it from another namespace), or remove the property that uses it.',
+  },
+  {
+    id: 'missing-super-type',
+    when: (m) => m.includes('Could not find super type'),
+    hint: 'The parent type after "extends" does not exist yet. Declare it first, or import it from another namespace.',
+  },
+  {
+    id: 'duplicate-declaration',
+    when: (m) => m.includes('Duplicate class name'),
+    hint: 'This name is already taken by another declaration in the same namespace. Rename one of the two.',
+  },
+];
+
+/**
+ * Extracts the type or declaration name a positionless validator message
+ * complains about, e.g. 'Undeclared type "GoverningLaw" ...',
+ * 'Could not find super type Base' or 'Duplicate class name org.x@1.0.0.Person'.
+ */
+export function extractCulpritName(message: string): string | null {
+  const undeclared = message.match(/Undeclared type "([A-Za-z_$][\w$]*)"/);
+  if (undeclared) return undeclared[1];
+  const superType = message.match(/Could not find super type ([A-Za-z_$][\w$]*)/);
+  if (superType) return superType[1];
+  const duplicate = message.match(/Duplicate class name [\w.@-]*?([A-Za-z_$][\w$]*)$/);
+  if (duplicate) return duplicate[1];
+  return null;
+}
+
+/**
+ * Locates the first line where the name a validator message complains about
+ * appears in the source. Used to point at the real position of semantic
+ * errors, whose official messages carry no line/column information.
+ */
+export function locateCulprit(message: string, source: string): { name: string; line: number } | null {
+  const name = extractCulpritName(message);
+  if (!name) return null;
+  const pattern = new RegExp(`\\b${name}\\b`);
+  const lines = source.split(/\r?\n/);
+  const index = lines.findIndex((l) => pattern.test(l));
+  return index >= 0 ? { name, line: index + 1 } : null;
+}
+
+/**
+ * Returns a friendly hint for a Concerto error message, or null when the
+ * situation is not one of the recognised common mistakes.
+ */
+export function findErrorHint(message: string, source: string): string | null {
+  const position = message.match(/line\s+(\d+)\s+col/i);
+  const errorLine = position ? parseInt(position[1], 10) : 0;
+  const sourceLines = source.split(/\r?\n/);
+  const line = errorLine ? sourceLines[errorLine - 1] ?? '' : '';
+  const context = errorLine ? enclosingDeclaration(sourceLines, errorLine) : null;
+  const rule = HINT_RULES.find((r) => r.when(message, line, context));
+  if (!rule) return null;
+  return typeof rule.hint === 'function' ? rule.hint({ message, line, context }) : rule.hint;
+}
+
+/**
+ * Builds a compiler-style excerpt of the offending line with a caret under
+ * the reported column, e.g.
+ *   13 | enum Contracting party {
+ *      |                  ^
+ * Returns null when the message carries no position.
+ */
+export function buildErrorSnippet(message: string, source: string): string | null {
+  const m = message.match(/line\s+(\d+)\s+col(?:umn)?\s+(\d+)/i);
+  if (!m) return null;
+  const lineNo = parseInt(m[1], 10);
+  const column = parseInt(m[2], 10);
+  const text = source.split(/\r?\n/)[lineNo - 1];
+  if (text === undefined) return null;
+  const label = `${lineNo} | `;
+  return `${label}${text}\n${' '.repeat(label.length + column - 1)}^`;
+}

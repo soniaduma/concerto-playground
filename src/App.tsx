@@ -6,7 +6,9 @@ import { Editor } from "./components/Editor";
 import { OutputTabs } from "./components/OutputTabs";
 import { ConcertoGraphEditor } from "./components/graph/ConcertoGraphEditor";
 import { FormView } from "./components/form/FormView";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { validateCto, parseCto } from "./utils/graph/ctoToGraph";
+import { collectSemanticIssues, type SemanticIssue } from "./utils/semanticErrors";
 import { parsePlaygroundUrlOptions } from "./utils/urlOptions";
 import { NDA_EXAMPLE, SERVICE_EXAMPLE, VEHICLES_EXAMPLE } from "./examples/nda.cto";
 import {
@@ -95,8 +97,28 @@ export default function App() {
 
   const validationError = useMemo(() => {
     const peers = Object.values(models).filter((s) => s && s !== source);
-    try { return validateCto(source, peers); } catch { return null; }
+    // validateCto reports problems as a return value; if it throws anyway,
+    // surface the message instead of silently pretending the model is valid.
+    try {
+      return validateCto(source, peers);
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
   }, [source, models]);
+
+  // When the official validator reports a problem, sweep the parsed model
+  // for ALL semantic issues so the user sees every problem at once instead
+  // of fixing them one by one. Empty when the text does not even parse; the
+  // parse-error path reports that case.
+  const semanticIssues = useMemo<SemanticIssue[]>(() => {
+    if (!validationError) return [];
+    try {
+      return collectSemanticIssues(parseCto(source), source);
+    } catch {
+      return [];
+    }
+  }, [validationError, source]);
+
 
   const runGeneration = useCallback(async (sources: string[]) => {
     const ordered = [activeTab, ...TARGET_LANGUAGES.filter((t) => t !== activeTab)];
@@ -551,7 +573,9 @@ export default function App() {
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              <Editor value={source} onChange={setSource} language="concerto" error={validationError} linkTargets={declaredTypes} onNavigate={handleFocusNode} />
+              <ErrorBoundary label="Text Editor" resetKeys={[source]}>
+                <Editor value={source} onChange={setSource} language="concerto" error={validationError} issues={semanticIssues} linkTargets={declaredTypes} onNavigate={handleFocusNode} />
+              </ErrorBoundary>
             </div>
           </div>
         )}
@@ -559,28 +583,36 @@ export default function App() {
         {/* Right: Graph, Form, or Code output */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {viewMode === "form" ? (
-            <FormView
-              models={models}
-              onModelChange={handleModelChange}
-              onAddNamespace={handleAddNamespace}
-              onRemoveNamespace={handleRemoveNamespace}
-            />
+            <ErrorBoundary label="Form View" resetKeys={[models]}>
+              <FormView
+                models={models}
+                onModelChange={handleModelChange}
+                onAddNamespace={handleAddNamespace}
+                onRemoveNamespace={handleRemoveNamespace}
+              />
+            </ErrorBoundary>
           ) : viewMode === "graph" ? (
-            <ConcertoGraphEditor
-              cto={source}
-              onModelChange={setSource}
-              showText={showCto}
-              onToggleText={() => setShowCto((v) => !v)}
-              onImport={handleImport}
-              onExport={handleExport}
-              focusRequest={focusRequest}
-            />
+            <ErrorBoundary label="Graph Canvas" resetKeys={[source]}>
+              <ConcertoGraphEditor
+                cto={source}
+                onModelChange={setSource}
+                showText={showCto}
+                onToggleText={() => setShowCto((v) => !v)}
+                onImport={handleImport}
+                onExport={handleExport}
+                focusRequest={focusRequest}
+                validationError={validationError}
+                semanticIssues={semanticIssues}
+              />
+            </ErrorBoundary>
           ) : (
-            <OutputTabs
-              results={results}
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
-            />
+            <ErrorBoundary label="Code Output" resetKeys={[results, activeTab]}>
+              <OutputTabs
+                results={results}
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+              />
+            </ErrorBoundary>
           )}
         </div>
       </div>
