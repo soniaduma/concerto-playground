@@ -16,6 +16,22 @@ export function parseCto(cto: string): ConcertoModel {
   return { namespace, imports, declarations };
 }
 
+// Formats an error thrown by the Concerto parser for display. Concerto's
+// ParseException carries structured fields (shortMessage, fileLocation), so
+// prefer those over the free-form message text; fall back to the message for
+// non-Concerto errors.
+export function describeParseError(e: unknown): string {
+  const err = e as {
+    shortMessage?: string;
+    fileLocation?: { start?: { line?: number; column?: number } };
+  };
+  const start = err.fileLocation?.start;
+  if (err.shortMessage && start?.line != null) {
+    return `${err.shortMessage} Line ${start.line} column ${start.column}`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function validateCto(cto: string, peers: string[] = []): string | null {
   try {
     const mm = new ModelManager();
@@ -24,7 +40,10 @@ export function validateCto(cto: string, peers: string[] = []): string | null {
     mm.addCTOModel(cto, 'model.cto');
     return null;
   } catch (e: any) {
-    return e.message || 'Validation failed';
+    const message: string = e.message || 'Validation failed';
+    // 'model.cto' is the internal name this function gives the model above;
+    // it means nothing to the user, so drop that fragment from the message.
+    return message.replace(/\s*File '?model\.cto'?:?\s*/g, ' ').trim();
   }
 }
 

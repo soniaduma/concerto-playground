@@ -1,11 +1,12 @@
 // Form view adapted from accordproject/lab-concerto-editor-web (Dan Selman <danscode@selman.org>, Ayman)
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ConcertoModel, Declaration, Property } from '../../utils/graph/types';
-import { parseCto } from '../../utils/graph/ctoToGraph';
+import { parseCto, describeParseError } from '../../utils/graph/ctoToGraph';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import { PropertyTree } from './PropertyTree';
 import { PropertySheet } from './PropertySheet';
+import '../errors.css';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,24 +26,26 @@ interface FormViewProps {
   onRemoveNamespace: (ns: string) => void;
 }
 
-function parseModelSafe(cto: string): ConcertoModel | null {
-  try {
-    return parseCto(cto);
-  } catch {
-    return null;
-  }
-}
-
 export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamespace }: FormViewProps) {
   const [selection, setSelection] = useState<FormSel>({ kind: 'none' });
 
-  // Parse all models, gracefully skipping broken ones
-  const parsedModels: Record<string, ConcertoModel> = {};
-  for (const [ns, cto] of Object.entries(models)) {
-    if (!cto) continue;
-    const parsed = parseModelSafe(cto);
-    if (parsed) parsedModels[ns] = parsed;
-  }
+  // Parse all models. Broken ones are excluded from the form, but their
+  // errors are collected and shown in a banner instead of silently
+  // disappearing from the tree. Memoized so selection changes do not
+  // re-run the parser for every namespace.
+  const { parsedModels, parseErrors } = useMemo(() => {
+    const parsed: Record<string, ConcertoModel> = {};
+    const errors: Array<{ ns: string; message: string }> = [];
+    for (const [ns, cto] of Object.entries(models)) {
+      if (!cto) continue;
+      try {
+        parsed[ns] = parseCto(cto);
+      } catch (e) {
+        errors.push({ ns, message: describeParseError(e) });
+      }
+    }
+    return { parsedModels: parsed, parseErrors: errors };
+  }, [models]);
 
   function handleAddDeclaration(ns: string) {
     const model = parsedModels[ns];
@@ -97,23 +100,42 @@ export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamesp
   }
 
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      <PropertyTree
-        models={parsedModels}
-        selection={selection}
-        onSelect={setSelection}
-        onAddNamespace={onAddNamespace}
-        onRemoveNamespace={onRemoveNamespace}
-        onAddDeclaration={handleAddDeclaration}
-        onAddProperty={handleAddProperty}
-        onAddEnumValue={handleAddEnumValue}
-      />
-      <PropertySheet
-        selection={selection}
-        models={parsedModels}
-        onModelChange={onModelChange}
-        onRemoveNamespace={onRemoveNamespace}
-      />
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      {parseErrors.length > 0 && (
+        <div role="alert" className="error-banner error-banner-strip">
+          <div className="error-banner-title">
+            {parseErrors.length === 1
+              ? 'One namespace has a syntax error and is hidden from the form:'
+              : `${parseErrors.length} namespaces have syntax errors and are hidden from the form:`}
+          </div>
+          {parseErrors.map(({ ns, message }) => (
+            <div key={ns} className="error-banner-message">
+              <strong>{ns}</strong>: {message}
+            </div>
+          ))}
+          <div className="error-banner-note">
+            Switch to the Graph or Code view to fix the schema text.
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <PropertyTree
+          models={parsedModels}
+          selection={selection}
+          onSelect={setSelection}
+          onAddNamespace={onAddNamespace}
+          onRemoveNamespace={onRemoveNamespace}
+          onAddDeclaration={handleAddDeclaration}
+          onAddProperty={handleAddProperty}
+          onAddEnumValue={handleAddEnumValue}
+        />
+        <PropertySheet
+          selection={selection}
+          models={parsedModels}
+          onModelChange={onModelChange}
+          onRemoveNamespace={onRemoveNamespace}
+        />
+      </div>
     </div>
   );
 }
