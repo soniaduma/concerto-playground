@@ -12,8 +12,14 @@ import { Identifiers } from '@accordproject/concerto-util';
 
 const { ID_REGEX } = Identifiers;
 
-// Version part of a namespace: full semver with optional prerelease tag.
-const VERSION_RE = /^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$/;
+// Namespace version format. Concerto adopts the SemVer.org grammar for
+// namespace versions, so we use the official regular expression published at
+// https://semver.org (the "suggested regular expression" from its FAQ). It
+// accepts major.minor.patch with an optional -prerelease and +build metadata,
+// which is exactly what the Concerto parser/validator accepts. A hand-rolled
+// pattern drifts from the spec (e.g. it wrongly rejected "1.0.0+build").
+const SEMVER_RE =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
 /**
  * Returns an error message if `name` is not a valid Concerto identifier
@@ -32,16 +38,26 @@ export function identifierError(name: string): string | null {
 
 /**
  * Returns an error message if `ns` is not a valid Concerto namespace
- * (dot-separated identifiers plus optional @semver), or null if it is valid.
+ * (dot-separated identifiers plus a required @semver version), or null if it
+ * is valid. Concerto rejects unversioned namespaces, so the version is
+ * required here too.
  */
 export function namespaceError(ns: string): string | null {
   if (!ns) return 'Namespace is required.';
   const at = ns.indexOf('@');
   const name = at === -1 ? ns : ns.slice(0, at);
   const version = at === -1 ? null : ns.slice(at + 1);
-  const segmentsValid = name.split('.').every((segment) => ID_REGEX.test(segment));
-  if (!segmentsValid || (version !== null && !VERSION_RE.test(version))) {
-    return 'Namespaces must be dot-separated words with no spaces, plus an optional version, e.g. "org.example@1.0.0".';
+  // Validate the name first, so a namespace like "org.my space" reports the
+  // space rather than the missing version.
+  const segmentsValid = name.length > 0 && name.split('.').every((segment) => ID_REGEX.test(segment));
+  if (!segmentsValid) {
+    return 'A namespace is dot-separated words with no spaces, e.g. "org.example@1.0.0".';
+  }
+  if (version === null) {
+    return 'A namespace needs a version, e.g. "org.example@1.0.0".';
+  }
+  if (!SEMVER_RE.test(version)) {
+    return 'The version after "@" must be a semantic version, e.g. "1.0.0", "2.1.0-beta.1" or "1.0.0+build".';
   }
   return null;
 }

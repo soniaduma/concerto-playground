@@ -44,11 +44,20 @@ describe('identifierError', () => {
 });
 
 describe('namespaceError', () => {
-  it('accepts valid namespaces', () => {
-    expect(namespaceError('org.example')).toBeNull();
+  it('accepts valid versioned namespaces', () => {
     expect(namespaceError('org.example@1.0.0')).toBeNull();
     expect(namespaceError('org.example@1.0.0-beta.1')).toBeNull();
-    expect(namespaceError('single')).toBeNull();
+    // Full SemVer, including build metadata, is valid and accepted by Concerto.
+    expect(namespaceError('org.example@1.0.0+build')).toBeNull();
+    expect(namespaceError('org.example@1.0.0-alpha+build.1')).toBeNull();
+    expect(namespaceError('single@2.3.4')).toBeNull();
+  });
+
+  it('requires a version, like the Concerto validator', () => {
+    // Concerto rejects unversioned namespaces ("Cannot create a ModelFile with
+    // an unversioned namespace"), so the form does too.
+    expect(namespaceError('org.example')).toMatch(/version/);
+    expect(namespaceError('single')).toMatch(/version/);
   });
 
   it('validates namespace segments with the concerto-util spec regex', () => {

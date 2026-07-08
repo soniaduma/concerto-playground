@@ -12,15 +12,11 @@
 // matching rule wins, so keep the more specific rules first.
 
 import { DECLARATION_TYPES } from './graph/types';
+import { locateTypeReference } from './graph/ctoToGraph';
 
 export interface EnclosingDeclaration {
   kind: string;
   name: string | null;
-}
-
-/** Escapes the one regex-relevant character allowed in Concerto identifiers. */
-export function escapeName(name: string): string {
-  return name.replace(/\$/g, '\\$');
 }
 
 /**
@@ -30,18 +26,6 @@ export function escapeName(name: string): string {
 export function parseErrorPosition(message: string): { line: number; column: number } | null {
   const m = message.match(/line\s+(\d+)\s+col(?:umn)?\s+(\d+)/i);
   return m ? { line: parseInt(m[1], 10), column: parseInt(m[2], 10) } : null;
-}
-
-/**
- * Returns the 1-based number of the first line (at or after `from`, 0-based)
- * containing every given word, or null.
- */
-export function findLine(lines: string[], from: number, ...words: string[]): number | null {
-  const patterns = words.map((w) => new RegExp(`\\b${escapeName(w)}\\b`));
-  for (let i = from; i < lines.length; i++) {
-    if (patterns.every((p) => p.test(lines[i]))) return i + 1;
-  }
-  return null;
 }
 
 interface HintInfo {
@@ -251,21 +235,25 @@ const HINT_RULES: HintRule[] = [
  * Extracts the type or declaration name a positionless validator message
  * complains about, e.g. 'Undeclared type "GoverningLaw" ...',
  * 'Could not find super type Base' or 'Duplicate class name org.x@1.0.0.Person'.
+ * The name is taken verbatim (between quotes, or the trailing token) so it
+ * stays correct for Unicode and `$` identifiers, which an ASCII character
+ * class would truncate or miss.
  */
 export function extractCulpritName(message: string): string | null {
-  const undeclared = message.match(/Undeclared type "([A-Za-z_$][\w$]*)"/);
+  const undeclared = message.match(/Undeclared type "([^"]+)"/);
   if (undeclared) return undeclared[1];
-  const superType = message.match(/Could not find super type ([A-Za-z_$][\w$]*)/);
-  if (superType) return superType[1];
-  const duplicate = message.match(/Duplicate class name [\w.@-]*?([A-Za-z_$][\w$]*)$/);
-  if (duplicate) return duplicate[1];
+  const superType = message.match(/Could not find super type (.+)$/);
+  if (superType) return superType[1].trim();
+  const duplicate = message.match(/Duplicate class name (.+)$/);
+  if (duplicate) return duplicate[1].trim().split('.').pop() ?? null;
   return null;
 }
 
 /**
- * Locates the first line where the name a validator message complains about
- * appears in the source. Used to point at the real position of semantic
- * errors, whose official messages carry no line/column information.
+ * Locates the culprit of a semantic error, whose official message carries no
+ * line/column. The name comes from the message and the position from the real
+ * parser's AST (via locateTypeReference), so no hand-rolled identifier regex is
+ * involved and Unicode/`$` names resolve correctly.
  */
 export function locateCulprit(
   message: string,
@@ -273,11 +261,8 @@ export function locateCulprit(
 ): { name: string; line: number; column: number } | null {
   const name = extractCulpritName(message);
   if (!name) return null;
-  const lines = source.split(/\r?\n/);
-  const line = findLine(lines, 0, name);
-  if (line === null) return null;
-  const idx = lines[line - 1].indexOf(name);
-  return { name, line, column: idx >= 0 ? idx + 1 : 1 };
+  const loc = locateTypeReference(source, name);
+  return loc ? { name, line: loc.line, column: loc.column } : null;
 }
 
 /**

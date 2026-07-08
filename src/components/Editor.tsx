@@ -1,7 +1,7 @@
 import MonacoEditor, { useMonaco, type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
-import { extractCulpritName, parseErrorPosition } from "../utils/errorHints";
+import { locateCulprit, parseErrorPosition } from "../utils/errorHints";
 
 interface EditorProps {
   value: string;
@@ -153,8 +153,8 @@ const setupMonaco: BeforeMount = (monacoInstance) => {
 };
 
 // Builds the error markers for the current error, in priority order: the
-// position embedded in the message, then every occurrence of the culprit
-// name, then line 1 as a last resort.
+// position embedded in the message, then the culprit's location from the
+// parser AST (for semantic errors), then line 1 as a last resort.
 function buildErrorMarkers(
   error: string,
   model: monaco.editor.ITextModel,
@@ -173,21 +173,20 @@ function buildErrorMarkers(
     ];
   }
 
-  // Semantic validator messages carry no position. Mark every occurrence of the name the official message
-  // complains about, instead of pointing at line 1.
-  const culprit = extractCulpritName(error);
+  // Semantic validator messages carry no position. Locate the culprit through
+  // the parser AST (Unicode/$-safe) instead of a text search for the name.
+  const culprit = locateCulprit(error, model.getValue());
   if (culprit) {
-    const markers = model
-      .findMatches(`\\b${culprit}\\b`, false, true, true, null, false)
-      .map((m) => ({
-        startLineNumber: m.range.startLineNumber,
-        startColumn: m.range.startColumn,
-        endLineNumber: m.range.endLineNumber,
-        endColumn: m.range.endColumn,
+    return [
+      {
+        startLineNumber: culprit.line,
+        startColumn: culprit.column,
+        endLineNumber: culprit.line,
+        endColumn: culprit.column + culprit.name.length,
         message: error,
         severity: monaco.MarkerSeverity.Error,
-      }));
-    if (markers.length > 0) return markers;
+      },
+    ];
   }
 
   return [

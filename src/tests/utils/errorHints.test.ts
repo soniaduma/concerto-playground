@@ -169,17 +169,41 @@ describe("locateCulprit", () => {
     expect(locateCulprit(message as string, cto)).toMatchObject({ name: "Base", line: 2 });
   });
 
-  it("extracts the bare name from a duplicate class message", () => {
+  it("points at the second (offending) occurrence of a duplicate name", () => {
     const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o String a\n}\nconcept Person {\n  o String b\n}';
     const message = validateCto(cto);
     expect(message).not.toBeNull();
     expect(extractCulpritName(message as string)).toBe("Person");
-    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "Person", line: 2 });
+    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "Person", line: 5 });
   });
 
   it("returns null for messages without a recognisable name", () => {
     expect(extractCulpritName("Something else went wrong")).toBeNull();
     expect(locateCulprit("Something else went wrong", "namespace org.x@1.0.0")).toBeNull();
+  });
+
+  // Regression: hand-rolled ASCII regexes broke on identifiers the Concerto
+  // parser accepts. The name and position now come from the parser AST.
+  it("keeps a Unicode type name whole (not truncated at the first non-ASCII char)", () => {
+    const cto = 'namespace org.x@1.0.0\nconcept Person extends CharlesⅢ {\n  o String n\n}';
+    const message = validateCto(cto);
+    expect(message).not.toBeNull();
+    expect(extractCulpritName(message as string)).toBe("CharlesⅢ");
+    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "CharlesⅢ", line: 2 });
+  });
+
+  it("locates a Unicode undeclared type", () => {
+    const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o αβγ other\n}';
+    const message = validateCto(cto);
+    expect(message).not.toBeNull();
+    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "αβγ", line: 3 });
+  });
+
+  it("locates a $-prefixed undeclared type", () => {
+    const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o $foo x\n}';
+    const message = validateCto(cto);
+    expect(message).not.toBeNull();
+    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "$foo", line: 3 });
   });
 });
 
