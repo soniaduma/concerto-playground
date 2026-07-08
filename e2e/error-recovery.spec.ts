@@ -62,10 +62,11 @@ test.describe('Graph semantic error banner', () => {
 
     const banner = page.getByRole('alert').filter({ hasText: 'Schema error' });
     await expect(banner).toBeVisible({ timeout: 5000 });
-    // The banner leads with the friendly hint; the raw "Undeclared type" text
-    // stays on the left editor's squiggle. Points at the culprit's line.
-    await expect(banner).toContainText('references this type');
-    await expect(banner).toContainText(/See line \d+/);
+    // The banner leads with the friendly hint, which names the missing type.
+    await expect(banner).toContainText('"Address"');
+    await expect(banner).toContainText('does not exist');
+    // Like parse errors, it points at the location with a code snippet.
+    await expect(banner).toContainText('o Address home');
   });
 });
 

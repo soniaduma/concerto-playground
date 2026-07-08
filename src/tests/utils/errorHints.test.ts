@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseCto, validateCto, describeParseError } from "../../utils/graph/ctoToGraph";
-import { findErrorHint, extractCulpritName, locateCulprit, buildErrorSnippet } from "../../utils/errorHints";
+import { findErrorHint, extractCulpritName, locateCulprit, parseErrorPosition, buildSnippet, stripPosition } from "../../utils/errorHints";
 
 // Runs the real Concerto parser on a broken snippet and returns the official
 // message, so the hint rules are tested against what the parser actually says.
@@ -45,6 +45,14 @@ describe("findErrorHint", () => {
     expect(findErrorHint(officialParseMessage(cto), cto)).toContain('write "o String name"');
   });
 
+  it("hints about a stray space when a property type contains one", () => {
+    const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o Stri ng email\n}';
+    const hint = findErrorHint(officialParseMessage(cto), cto);
+    expect(hint).toContain('stray space');
+    // The old rule fired here and suggested a nonsensical extra "o" marker.
+    expect(hint).not.toContain('o o ');
+  });
+
   it("hints when a property is missing its name", () => {
     const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o String\n}';
     expect(findErrorHint(officialParseMessage(cto), cto)).toContain("a type but no name");
@@ -66,25 +74,31 @@ describe("findErrorHint", () => {
     expect(findErrorHint(officialParseMessage(cto), cto)).toContain("never opens");
   });
 
-  it("hints on an undeclared property type (validator message)", () => {
+  it("names the undeclared property type (validator message)", () => {
     const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o Address home\n}';
     const message = validateCto(cto);
     expect(message).not.toBeNull();
-    expect(findErrorHint(message as string, cto)).toContain("still references this type");
+    const hint = findErrorHint(message as string, cto);
+    expect(hint).toContain('"Address"');
+    expect(hint).toContain('does not exist');
   });
 
-  it("hints on a missing super type (validator message)", () => {
+  it("names the missing super type (validator message)", () => {
     const cto = 'namespace org.x@1.0.0\nconcept Person extends Base {\n  o String name\n}';
     const message = validateCto(cto);
     expect(message).not.toBeNull();
-    expect(findErrorHint(message as string, cto)).toContain("parent type");
+    const hint = findErrorHint(message as string, cto);
+    expect(hint).toContain('"Base"');
+    expect(hint).toContain('parent type');
   });
 
-  it("hints on duplicate declaration names (validator message)", () => {
+  it("names the duplicated declaration (validator message)", () => {
     const cto = 'namespace org.x@1.0.0\nconcept Person {\n  o String a\n}\nconcept Person {\n  o String b\n}';
     const message = validateCto(cto);
     expect(message).not.toBeNull();
-    expect(findErrorHint(message as string, cto)).toContain("already taken");
+    const hint = findErrorHint(message as string, cto);
+    expect(hint).toContain('"Person"');
+    expect(hint).toContain('already used');
   });
 
   it("returns null for unrecognised errors", () => {
@@ -145,7 +159,7 @@ describe("locateCulprit", () => {
     const cto = 'namespace org.x@1.0.0\nconcept NDAData {\n  o String name\n  o GoverningLaw governingLaw\n}';
     const message = validateCto(cto);
     expect(message).not.toBeNull();
-    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "GoverningLaw", line: 4 });
+    expect(locateCulprit(message as string, cto)).toMatchObject({ name: "GoverningLaw", line: 4, column: 5 });
   });
 
   it("points at the line of a missing super type", () => {
@@ -169,20 +183,32 @@ describe("locateCulprit", () => {
   });
 });
 
-describe("buildErrorSnippet", () => {
+describe("stripPosition", () => {
+  it("removes a trailing line/column suffix", () => {
+    expect(stripPosition('Expected "o" but "C" found. Line 8 column 2')).toBe(
+      'Expected "o" but "C" found',
+    );
+  });
+
+  it("leaves a positionless message untouched", () => {
+    expect(stripPosition('Undeclared type "Address"')).toBe('Undeclared type "Address"');
+  });
+});
+
+describe("buildSnippet", () => {
   it("shows the offending line with a caret at the column", () => {
     const cto = 'namespace org.x@1.0.0\nenum Contracting party {\n}';
     const message = officialParseMessage(cto);
-    const snippet = buildErrorSnippet(message, cto);
+    const position = parseErrorPosition(message)!;
+    const snippet = buildSnippet(cto, position.line, position.column);
     expect(snippet).not.toBeNull();
     const [codeLine, caretLine] = (snippet as string).split('\n');
     expect(codeLine).toBe('2 | enum Contracting party {');
     // The caret must sit under the column the parser reported
-    const column = parseInt(message.match(/column (\d+)/)![1], 10);
-    expect(caretLine.indexOf('^')).toBe('2 | '.length + column - 1);
+    expect(caretLine.indexOf('^')).toBe('2 | '.length + position.column - 1);
   });
 
-  it("returns null for positionless messages", () => {
-    expect(buildErrorSnippet('Undeclared type "X" in "property y".', 'namespace org.x@1.0.0')).toBeNull();
+  it("returns null when the line is out of range", () => {
+    expect(buildSnippet('namespace org.x@1.0.0', 99, 1)).toBeNull();
   });
 });

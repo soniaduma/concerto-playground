@@ -24,7 +24,7 @@ import { GraphToolbar } from './GraphToolbar';
 import { NodeSearch } from './NodeSearch';
 import { useFocusNode } from './useFocusNode';
 import { parseCto, declarationsToGraph, describeParseError } from '../../utils/graph/ctoToGraph';
-import { findErrorHint, locateCulprit, buildErrorSnippet } from '../../utils/errorHints';
+import { findErrorHint, locateCulprit, parseErrorPosition, buildSnippet, stripPosition } from '../../utils/errorHints';
 import '../errors.css';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import type { Declaration, ConcertoModel } from '../../utils/graph/types';
@@ -97,15 +97,15 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
   // The semantic validation error shown in the overlay banner when the text
-  // parses but the model is invalid. Points at the culprit's line when the
-  // official message names one.
+  // parses but the model is invalid. The snippet points a caret at the
+  // culprit name, the same way parse errors point at their position.
   const rawSemanticError = useMemo(() => {
     if (!validationError) return null;
     const culprit = locateCulprit(validationError, cto);
     return {
       message: validationError,
       hint: findErrorHint(validationError, cto),
-      location: culprit ? `See line ${culprit.line} on the left.` : null,
+      snippet: culprit ? buildSnippet(cto, culprit.line, culprit.column) : null,
     };
   }, [validationError, cto]);
   const semanticError = useDebouncedError(rawSemanticError, 600);
@@ -151,10 +151,11 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
       // report the parse error in an overlay banner instead of dropping it
       // (debounced above so it does not flash while typing).
       const message = describeParseError(e);
+      const position = parseErrorPosition(message);
       setRawParseError({
         message,
         hint: findErrorHint(message, cto),
-        snippet: buildErrorSnippet(message, cto),
+        snippet: position ? buildSnippet(cto, position.line, position.column) : null,
       });
     }
   }, [cto, setNodes, setEdges]);
@@ -400,15 +401,14 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
             {/* Lead with the friendly hint; the raw parser/validator message
                 stays on the left editor's squiggle. Fall back to the raw
                 message when no hint matches this error. */}
-            <div className="error-banner-message">{bannerError.hint ?? bannerError.message}</div>
-            {parseError?.snippet && <pre className="error-banner-code">{parseError.snippet}</pre>}
+            <div className="error-banner-message">{bannerError.hint ?? stripPosition(bannerError.message)}</div>
+            {/* Every banner points at its location the same way: a code
+                excerpt with a caret under the offending column. */}
+            {bannerError.snippet && <pre className="error-banner-code">{bannerError.snippet}</pre>}
             {parseError && (
               <div className="error-banner-note">
                 Showing the last valid graph. Fix the text on the left to update it.
               </div>
-            )}
-            {!parseError && semanticError?.location && (
-              <div className="error-banner-note">{semanticError.location}</div>
             )}
           </div>
         )}

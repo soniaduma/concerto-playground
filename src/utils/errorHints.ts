@@ -185,8 +185,24 @@ const HINT_RULES: HintRule[] = [
     hint: 'The file ends while a declaration is still open. Add the missing "}" to close it.',
   },
   {
+    id: 'space-in-property-tokens',
+    // A property line that already carries its marker but has an extra word.
+    // This almost always means a type or name contains a space ("Stri ng"
+    // for "String"); the parser reports the extra token as unexpected after
+    // it has already read a complete "o Type name".
+    when: (m, line) =>
+      m.includes('"optional"') && /^\s*(?:o|-->)\s+\S+\s+\S+\s+\S/.test(line),
+    hint: 'A property is written "o Type name", one word for the type and one for the name. This line has an extra word, so a type or name has a stray space in it (for example "Stri ng" should be "String"). Remove the space.',
+  },
+  {
     id: 'missing-property-prefix',
-    when: (m) => m.includes('"-->"') && m.includes('"o"') && !m.includes('end of input'),
+    // Only when the line does NOT already start with a marker, otherwise this
+    // fires on unrelated property errors and suggests a nonsensical "o o ..."
+    when: (m, line) =>
+      m.includes('"-->"') &&
+      m.includes('"o"') &&
+      !m.includes('end of input') &&
+      !/^\s*(?:o\s|-->)/.test(line),
     hint: ({ line }) => {
       const body = line.trim();
       return body
@@ -202,17 +218,32 @@ const HINT_RULES: HintRule[] = [
   {
     id: 'undeclared-type',
     when: (m) => m.includes('Undeclared type'),
-    hint: 'The property named in the message still references this type. Either declare or restore the type (or import it from another namespace), or remove the property that uses it.',
+    hint: ({ message }) => {
+      const type = extractCulpritName(message);
+      return type
+        ? `The type "${type}" does not exist. Declare it in this file, import it from another namespace, or remove the property that uses it.`
+        : 'This type does not exist. Declare it in this file, import it from another namespace, or remove the property that uses it.';
+    },
   },
   {
     id: 'missing-super-type',
     when: (m) => m.includes('Could not find super type'),
-    hint: 'The parent type after "extends" does not exist yet. Declare it first, or import it from another namespace.',
+    hint: ({ message }) => {
+      const type = extractCulpritName(message);
+      return type
+        ? `The parent type "${type}" after "extends" does not exist yet. Declare it above this one, or import it from another namespace.`
+        : 'The parent type after "extends" does not exist yet. Declare it above this one, or import it from another namespace.';
+    },
   },
   {
     id: 'duplicate-declaration',
     when: (m) => m.includes('Duplicate class name'),
-    hint: 'This name is already taken by another declaration in the same namespace. Rename one of the two.',
+    hint: ({ message }) => {
+      const name = extractCulpritName(message);
+      return name
+        ? `The name "${name}" is already used by another declaration in this namespace. Rename one of the two.`
+        : 'This name is already used by another declaration in this namespace. Rename one of the two.';
+    },
   },
 ];
 
@@ -236,11 +267,17 @@ export function extractCulpritName(message: string): string | null {
  * appears in the source. Used to point at the real position of semantic
  * errors, whose official messages carry no line/column information.
  */
-export function locateCulprit(message: string, source: string): { name: string; line: number } | null {
+export function locateCulprit(
+  message: string,
+  source: string,
+): { name: string; line: number; column: number } | null {
   const name = extractCulpritName(message);
   if (!name) return null;
-  const line = findLine(source.split(/\r?\n/), 0, name);
-  return line !== null ? { name, line } : null;
+  const lines = source.split(/\r?\n/);
+  const line = findLine(lines, 0, name);
+  if (line === null) return null;
+  const idx = lines[line - 1].indexOf(name);
+  return { name, line, column: idx >= 0 ? idx + 1 : 1 };
 }
 
 /**
@@ -258,17 +295,26 @@ export function findErrorHint(message: string, source: string): string | null {
 }
 
 /**
- * Builds a compiler-style excerpt of the offending line with a caret under
- * the reported column, e.g.
+ * Removes a trailing "line N column M" position from a parser message. The
+ * banner shows the position with a caret snippet instead, so repeating it in
+ * the message text is redundant. The position stays in the raw message (for
+ * the snippet and hint matching); this is only for display.
+ */
+export function stripPosition(message: string): string {
+  return message.replace(/\.?\s*[Ll]ine\s+\d+\s+col(?:umn)?\s+\d+\.?\s*$/, '').trim();
+}
+
+/**
+ * Builds a compiler-style excerpt of the given line with a caret under the
+ * given column, e.g.
  *   13 | enum Contracting party {
  *      |                  ^
- * Returns null when the message carries no position.
+ * Shared by every error banner so parse and semantic errors point at their
+ * location the same way. Returns null when the line is out of range.
  */
-export function buildErrorSnippet(message: string, source: string): string | null {
-  const position = parseErrorPosition(message);
-  if (!position) return null;
-  const text = source.split(/\r?\n/)[position.line - 1];
+export function buildSnippet(source: string, line: number, column: number): string | null {
+  const text = source.split(/\r?\n/)[line - 1];
   if (text === undefined) return null;
-  const label = `${position.line} | `;
-  return `${label}${text}\n${' '.repeat(label.length + position.column - 1)}^`;
+  const label = `${line} | `;
+  return `${label}${text}\n${' '.repeat(label.length + Math.max(0, column - 1))}^`;
 }
