@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -64,6 +64,22 @@ interface HistoryEntry {
 
 const MAX_HISTORY = 50;
 
+// Debounces an error value: shows it only after `delay` ms of stability, so
+// banners do not flash on every keystroke, and clears it immediately when it
+// becomes null.
+function useDebouncedError<T>(value: T | null, delay: number): T | null {
+  const [debounced, setDebounced] = useState<T | null>(null);
+  useEffect(() => {
+    if (value === null) {
+      setDebounced(null);
+      return;
+    }
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
 export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText, onImport, onExport, focusRequest, validationError, semanticIssues }: ConcertoGraphEditorProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -71,9 +87,8 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   const [model, setModelState] = useState<ConcertoModel>({ namespace: 'org.example@1.0.0', imports: [], declarations: [] });
   const modelRef = useRef(model);
   const setModel = useCallback((m: ConcertoModel) => { modelRef.current = m; setModelState(m); }, []);
-  const [parseError, setParseError] = useState<{ message: string; hint: string | null; snippet: string | null } | null>(null);
-  const parseErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [semanticError, setSemanticError] = useState<{ message: string; hint: string | null; location: string | null; issues: SemanticIssue[] } | null>(null);
+  const [rawParseError, setRawParseError] = useState<{ message: string; hint: string | null; snippet: string | null } | null>(null);
+  const parseError = useDebouncedError(rawParseError, 600);
   const [activeDialog, setActiveDialog] = useState<{ type: 'property' | 'enum-value' | 'inheritance'; declName: string } | null>(null);
   const [connectDialog, setConnectDialog] = useState<{ sourceId: string; targetId: string } | null>(null);
   const updatingFromGraph = useRef(false);
@@ -84,41 +99,22 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
 
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
-  const clearParseError = useCallback(() => {
-    if (parseErrorTimer.current) {
-      clearTimeout(parseErrorTimer.current);
-      parseErrorTimer.current = null;
-    }
-    setParseError(null);
-  }, []);
-
-  useEffect(() => () => {
-    if (parseErrorTimer.current) clearTimeout(parseErrorTimer.current);
-  }, []);
-
-  // Debounced copy of the semantic validation error, shown in the overlay
-  // banner when the text parses but the model is invalid (e.g. a property
-  // referencing an undeclared type). Clearing is immediate.
-  useEffect(() => {
-    if (!validationError) {
-      setSemanticError(null);
-      return;
-    }
-    const message = validationError;
+  // The semantic validation error shown in the overlay banner when the text
+  // parses but the model is invalid. The hint and "See line N" note are only
+  // rendered when the sweep found no itemised issues, so they are only
+  // computed in that (rare) case.
+  const rawSemanticError = useMemo(() => {
+    if (!validationError) return null;
     const issues = semanticIssues ?? [];
-    const timer = setTimeout(() => {
-      // Semantic messages carry no position, so point at the first line where
-      // the name they complain about appears in the text.
-      const culprit = locateCulprit(message, cto);
-      setSemanticError({
-        message,
-        hint: findErrorHint(message, cto),
-        location: culprit ? `See line ${culprit.line} on the left.` : null,
-        issues,
-      });
-    }, 600);
-    return () => clearTimeout(timer);
+    const culprit = issues.length === 0 ? locateCulprit(validationError, cto) : null;
+    return {
+      message: validationError,
+      hint: issues.length === 0 ? findErrorHint(validationError, cto) : null,
+      location: culprit ? `See line ${culprit.line} on the left.` : null,
+      issues,
+    };
   }, [validationError, cto, semanticIssues]);
+  const semanticError = useDebouncedError(rawSemanticError, 600);
 
   useEffect(() => {
     for (const node of nodes) {
@@ -155,19 +151,19 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
         pushHistory({ model: parsed, nodes: nodesWithPositions, edges: graph.edges });
       }
       isUndoRedo.current = false;
-      clearParseError();
+      setRawParseError(null);
     } catch (e) {
       // Keep the last valid graph on screen while the user is typing, but
-      // report the parse error in an overlay banner instead of dropping it.
-      // The banner is debounced so it does not flash on every keystroke
-      // while a declaration is being typed out.
+      // report the parse error in an overlay banner instead of dropping it
+      // (debounced above so it does not flash while typing).
       const message = describeParseError(e);
-      const hint = findErrorHint(message, cto);
-      const snippet = buildErrorSnippet(message, cto);
-      if (parseErrorTimer.current) clearTimeout(parseErrorTimer.current);
-      parseErrorTimer.current = setTimeout(() => setParseError({ message, hint, snippet }), 600);
+      setRawParseError({
+        message,
+        hint: findErrorHint(message, cto),
+        snippet: buildErrorSnippet(message, cto),
+      });
     }
-  }, [cto, setNodes, setEdges, clearParseError]);
+  }, [cto, setNodes, setEdges]);
 
   const updateModelAndSync = useCallback((newDeclarations: Declaration[]) => {
     const cur = modelRef.current;
@@ -184,10 +180,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     pushHistory({ model: newModel, nodes: nodesWithPositions, edges: graph.edges });
     // A graph edit regenerates the CTO from the last valid model, so any
     // pending text parse error is now stale.
-    clearParseError();
+    setRawParseError(null);
     updatingFromGraph.current = true;
     onModelChange?.(newCto);
-  }, [setModel, setNodes, setEdges, onModelChange, pushHistory, clearParseError]);
+  }, [setModel, setNodes, setEdges, onModelChange, pushHistory]);
 
   const handleAddDeclaration = useCallback((decl: Declaration) => {
     updateModelAndSync([...modelRef.current.declarations, decl]);
@@ -263,10 +259,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     for (const node of entry.nodes) {
       nodePositionsRef.current.set(node.id, { ...node.position });
     }
-    clearParseError();
+    setRawParseError(null);
     updatingFromGraph.current = true;
     onModelChange?.(declarationsToCto(entry.model));
-  }, [history, historyIndex, setNodes, setEdges, onModelChange, clearParseError]);
+  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
 
   const handleRedo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
@@ -280,10 +276,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     for (const node of entry.nodes) {
       nodePositionsRef.current.set(node.id, { ...node.position });
     }
-    clearParseError();
+    setRawParseError(null);
     updatingFromGraph.current = true;
     onModelChange?.(declarationsToCto(entry.model));
-  }, [history, historyIndex, setNodes, setEdges, onModelChange, clearParseError]);
+  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

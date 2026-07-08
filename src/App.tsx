@@ -79,15 +79,22 @@ export default function App() {
   // The "active" source for single-model views (graph editor, CTO editor)
   const source = models[activeNamespace] ?? "";
 
-  // Declared type names in the active model — used to render clickable
-  // references in the CTO editor.
-  const declaredTypes = useMemo(() => {
+  // Single parse of the active model per keystroke; everything below that
+  // needs the AST derives from this memo instead of re-parsing.
+  const parsedModel = useMemo(() => {
     try {
-      return parseCto(source).declarations.map((d) => d.name);
+      return parseCto(source);
     } catch {
-      return [];
+      return null;
     }
   }, [source]);
+
+  // Declared type names in the active model — used to render clickable
+  // references in the CTO editor.
+  const declaredTypes = useMemo(
+    () => parsedModel?.declarations.map((d) => d.name) ?? [],
+    [parsedModel],
+  );
 
   // Jump to a declaration's node in the graph (from a CTO reference click).
   const handleFocusNode = useCallback((name: string) => {
@@ -110,15 +117,10 @@ export default function App() {
   // for ALL semantic issues so the user sees every problem at once instead
   // of fixing them one by one. Empty when the text does not even parse; the
   // parse-error path reports that case.
-  const semanticIssues = useMemo<SemanticIssue[]>(() => {
-    if (!validationError) return [];
-    try {
-      return collectSemanticIssues(parseCto(source), source);
-    } catch {
-      return [];
-    }
-  }, [validationError, source]);
-
+  const semanticIssues = useMemo<SemanticIssue[]>(
+    () => (validationError && parsedModel ? collectSemanticIssues(parsedModel, source) : []),
+    [validationError, parsedModel, source],
+  );
 
   const runGeneration = useCallback(async (sources: string[]) => {
     const ordered = [activeTab, ...TARGET_LANGUAGES.filter((t) => t !== activeTab)];

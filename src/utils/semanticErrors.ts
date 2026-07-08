@@ -7,6 +7,7 @@
 
 import type { ConcertoModel, Declaration } from './graph/types';
 import { PRIMITIVE_TYPES } from './graph/types';
+import { escapeName, findLine } from './errorHints';
 
 export interface SemanticIssue {
   /** 1-based line of the problem in the source, or null if not found. */
@@ -15,18 +16,6 @@ export interface SemanticIssue {
   name: string;
   /** Personalized, actionable description. */
   text: string;
-}
-
-function escapeName(name: string): string {
-  return name.replace(/\$/g, '\\$');
-}
-
-function findLine(lines: string[], from: number, ...words: string[]): number | null {
-  const patterns = words.map((w) => new RegExp(`\\b${escapeName(w)}\\b`));
-  for (let i = from; i < lines.length; i++) {
-    if (patterns.every((p) => p.test(lines[i]))) return i + 1;
-  }
-  return null;
 }
 
 function declarationLine(lines: string[], decl: Declaration, from = 0): number | null {

@@ -11,9 +11,37 @@
 // via the "line N column M" position that Concerto errors carry). First
 // matching rule wins, so keep the more specific rules first.
 
+import { DECLARATION_TYPES } from './graph/types';
+
 export interface EnclosingDeclaration {
   kind: string;
   name: string | null;
+}
+
+/** Escapes the one regex-relevant character allowed in Concerto identifiers. */
+export function escapeName(name: string): string {
+  return name.replace(/\$/g, '\\$');
+}
+
+/**
+ * Extracts the "line N column M" position that Concerto error messages carry,
+ * or null for positionless (semantic) messages. Single owner of that format.
+ */
+export function parseErrorPosition(message: string): { line: number; column: number } | null {
+  const m = message.match(/line\s+(\d+)\s+col(?:umn)?\s+(\d+)/i);
+  return m ? { line: parseInt(m[1], 10), column: parseInt(m[2], 10) } : null;
+}
+
+/**
+ * Returns the 1-based number of the first line (at or after `from`, 0-based)
+ * containing every given word, or null.
+ */
+export function findLine(lines: string[], from: number, ...words: string[]): number | null {
+  const patterns = words.map((w) => new RegExp(`\\b${escapeName(w)}\\b`));
+  for (let i = from; i < lines.length; i++) {
+    if (patterns.every((p) => p.test(lines[i]))) return i + 1;
+  }
+  return null;
 }
 
 interface HintInfo {
@@ -33,7 +61,8 @@ function joinWords(words: string[]): string {
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('');
 }
 
-const DECLARATION_KEYWORDS = 'abstract|asset|concept|enum|event|map|participant|scalar|transaction';
+// Derived from the canonical list in graph/types.ts so the two cannot drift.
+const DECLARATION_KEYWORDS = DECLARATION_TYPES.join('|');
 
 export const DECLARATION_START = new RegExp(
   `^\\s*(?:abstract\\s+)?(${DECLARATION_KEYWORDS})\\b(?:\\s+([A-Za-z_$][\\w$]*))?`
@@ -210,10 +239,8 @@ export function extractCulpritName(message: string): string | null {
 export function locateCulprit(message: string, source: string): { name: string; line: number } | null {
   const name = extractCulpritName(message);
   if (!name) return null;
-  const pattern = new RegExp(`\\b${name}\\b`);
-  const lines = source.split(/\r?\n/);
-  const index = lines.findIndex((l) => pattern.test(l));
-  return index >= 0 ? { name, line: index + 1 } : null;
+  const line = findLine(source.split(/\r?\n/), 0, name);
+  return line !== null ? { name, line } : null;
 }
 
 /**
@@ -221,8 +248,7 @@ export function locateCulprit(message: string, source: string): { name: string; 
  * situation is not one of the recognised common mistakes.
  */
 export function findErrorHint(message: string, source: string): string | null {
-  const position = message.match(/line\s+(\d+)\s+col/i);
-  const errorLine = position ? parseInt(position[1], 10) : 0;
+  const errorLine = parseErrorPosition(message)?.line ?? 0;
   const sourceLines = source.split(/\r?\n/);
   const line = errorLine ? sourceLines[errorLine - 1] ?? '' : '';
   const context = errorLine ? enclosingDeclaration(sourceLines, errorLine) : null;
@@ -239,12 +265,10 @@ export function findErrorHint(message: string, source: string): string | null {
  * Returns null when the message carries no position.
  */
 export function buildErrorSnippet(message: string, source: string): string | null {
-  const m = message.match(/line\s+(\d+)\s+col(?:umn)?\s+(\d+)/i);
-  if (!m) return null;
-  const lineNo = parseInt(m[1], 10);
-  const column = parseInt(m[2], 10);
-  const text = source.split(/\r?\n/)[lineNo - 1];
+  const position = parseErrorPosition(message);
+  if (!position) return null;
+  const text = source.split(/\r?\n/)[position.line - 1];
   if (text === undefined) return null;
-  const label = `${lineNo} | `;
-  return `${label}${text}\n${' '.repeat(label.length + column - 1)}^`;
+  const label = `${position.line} | `;
+  return `${label}${text}\n${' '.repeat(label.length + position.column - 1)}^`;
 }

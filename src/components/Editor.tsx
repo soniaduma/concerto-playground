@@ -1,7 +1,7 @@
 import MonacoEditor, { useMonaco, type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
-import { extractCulpritName } from "../utils/errorHints";
+import { extractCulpritName, parseErrorPosition } from "../utils/errorHints";
 import { computeQuickFixes } from "../utils/quickFixes";
 import type { SemanticIssue } from "../utils/semanticErrors";
 
@@ -200,6 +200,78 @@ const setupMonaco: BeforeMount = (monacoInstance) => {
   });
 };
 
+// Builds the error markers for the current error/issues, in priority order:
+// the position embedded in the message, then the sweep's issue list, then
+// every occurrence of the culprit name, then line 1 as a last resort.
+function buildErrorMarkers(
+  error: string,
+  issues: SemanticIssue[] | undefined,
+  model: monaco.editor.ITextModel,
+): monaco.editor.IMarkerData[] {
+  const position = parseErrorPosition(error);
+  if (position) {
+    return [
+      {
+        startLineNumber: position.line,
+        startColumn: Math.max(1, position.column - 1),
+        endLineNumber: position.line,
+        endColumn: position.column + 2,
+        message: error,
+        severity: monaco.MarkerSeverity.Error,
+      },
+    ];
+  }
+
+  // Semantic validator messages carry no position. Prefer the sweep's issue
+  // list (one precisely placed marker per problem, each carrying its own
+  // personalized message so quick fixes stay specific).
+  if (issues && issues.length > 0) {
+    const markers = issues
+      .filter((issue) => issue.line !== null && issue.line <= model.getLineCount())
+      .map((issue) => {
+        const lineContent = model.getLineContent(issue.line as number);
+        const col = lineContent.indexOf(issue.name) + 1 || 1;
+        return {
+          startLineNumber: issue.line as number,
+          startColumn: col,
+          endLineNumber: issue.line as number,
+          endColumn: col + issue.name.length,
+          message: issue.text,
+          severity: monaco.MarkerSeverity.Error,
+        };
+      });
+    if (markers.length > 0) return markers;
+  }
+
+  // Otherwise mark every occurrence of the name the official message
+  // complains about, instead of pointing at line 1.
+  const culprit = extractCulpritName(error);
+  if (culprit) {
+    const markers = model
+      .findMatches(`\\b${culprit}\\b`, false, true, true, null, false)
+      .map((m) => ({
+        startLineNumber: m.range.startLineNumber,
+        startColumn: m.range.startColumn,
+        endLineNumber: m.range.endLineNumber,
+        endColumn: m.range.endColumn,
+        message: error,
+        severity: monaco.MarkerSeverity.Error,
+      }));
+    if (markers.length > 0) return markers;
+  }
+
+  return [
+    {
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 3,
+      message: error,
+      severity: monaco.MarkerSeverity.Error,
+    },
+  ];
+}
+
 // ── Editor component ─────────────────────────────────────────────────────────
 
 export function Editor({
@@ -267,75 +339,11 @@ export function Editor({
     const model = editorRef.current?.getModel();
     if (!model) return;
 
-    if (error) {
-      // Parse "Line N column M" from the error message (Concerto parser format)
-      const match = error.match(/[Ll]ine\s+(\d+)\s+col(?:umn)?\s+(\d+)/);
-      let markers: monaco.editor.IMarkerData[] = [];
-      if (match) {
-        const lineNumber = parseInt(match[1], 10);
-        const col = parseInt(match[2], 10);
-        markers = [
-          {
-            startLineNumber: lineNumber,
-            startColumn: Math.max(1, col - 1),
-            endLineNumber: lineNumber,
-            endColumn: col + 2,
-            message: error,
-            severity: monaco.MarkerSeverity.Error,
-          },
-        ];
-      } else {
-        // Semantic validator messages carry no position. Prefer the sweep's
-        // issue list (one precisely placed marker per problem, each carrying
-        // its own personalized message so quick fixes stay specific).
-        if (issues && issues.length > 0) {
-          markers = issues
-            .filter((issue) => issue.line !== null && issue.line <= model.getLineCount())
-            .map((issue) => {
-              const lineContent = model.getLineContent(issue.line as number);
-              const col = lineContent.indexOf(issue.name) + 1 || 1;
-              return {
-                startLineNumber: issue.line as number,
-                startColumn: col,
-                endLineNumber: issue.line as number,
-                endColumn: col + issue.name.length,
-                message: issue.text,
-                severity: monaco.MarkerSeverity.Error,
-              };
-            });
-        }
-        // Otherwise mark every occurrence of the name the official message
-        // complains about, instead of pointing at line 1.
-        const culprit = markers.length === 0 ? extractCulpritName(error) : null;
-        if (culprit) {
-          markers = model
-            .findMatches(`\\b${culprit}\\b`, false, true, true, null, false)
-            .map((m) => ({
-              startLineNumber: m.range.startLineNumber,
-              startColumn: m.range.startColumn,
-              endLineNumber: m.range.endLineNumber,
-              endColumn: m.range.endColumn,
-              message: error,
-              severity: monaco.MarkerSeverity.Error,
-            }));
-        }
-        if (markers.length === 0) {
-          markers = [
-            {
-              startLineNumber: 1,
-              startColumn: 1,
-              endLineNumber: 1,
-              endColumn: 3,
-              message: error,
-              severity: monaco.MarkerSeverity.Error,
-            },
-          ];
-        }
-      }
-      monacoInstance.editor.setModelMarkers(model, "concerto", markers);
-    } else {
-      monacoInstance.editor.setModelMarkers(model, "concerto", []);
-    }
+    monacoInstance.editor.setModelMarkers(
+      model,
+      "concerto",
+      error ? buildErrorMarkers(error, issues, model) : [],
+    );
   }, [error, issues, monacoInstance, editorReady]);
 
   return (

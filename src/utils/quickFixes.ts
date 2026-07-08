@@ -5,6 +5,8 @@
 import {
   DECLARATION_START,
   enclosingDeclaration,
+  findLine,
+  parseErrorPosition,
   suggestJoinedName,
 } from './errorHints';
 
@@ -19,10 +21,6 @@ export interface QuickFixEdit {
 export interface QuickFix {
   title: string;
   edit: QuickFixEdit;
-}
-
-function escapeName(name: string): string {
-  return name.replace(/\$/g, '\\$');
 }
 
 function atEndOfFile(lines: string[], text: string): QuickFixEdit {
@@ -51,8 +49,7 @@ function deleteLine(lines: string[], line: number): QuickFixEdit {
 export function computeQuickFixes(message: string, source: string): QuickFix[] {
   const fixes: QuickFix[] = [];
   const lines = source.split(/\r?\n/);
-  const pos = message.match(/line\s+(\d+)\s+col(?:umn)?\s+(\d+)/i);
-  const errorLine = pos ? parseInt(pos[1], 10) : 0;
+  const errorLine = parseErrorPosition(message)?.line ?? 0;
   const lineText = errorLine ? lines[errorLine - 1] ?? '' : '';
 
   // The file ends while a declaration is still open
@@ -134,13 +131,11 @@ export function computeQuickFixes(message: string, source: string): QuickFix[] {
       message.match(/property "([\w$]+)"/)?.[1] ??
       message.match(/property [\w.@$-]*\.([\w$]+)"/)?.[1];
     if (prop) {
-      const typePattern = new RegExp(`\\b${escapeName(type)}\\b`);
-      const propPattern = new RegExp(`\\b${escapeName(prop)}\\b`);
-      const index = lines.findIndex((l) => typePattern.test(l) && propPattern.test(l));
-      if (index >= 0) {
+      const line = findLine(lines, 0, type, prop);
+      if (line !== null) {
         fixes.push({
           title: `Remove property "${prop}"`,
-          edit: deleteLine(lines, index + 1),
+          edit: deleteLine(lines, line),
         });
       }
     }
