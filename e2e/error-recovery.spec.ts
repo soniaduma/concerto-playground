@@ -31,10 +31,11 @@ test.describe('Graph parse error banner', () => {
     // Monaco renders its own hidden role=alert elements, so match ours by text
     const banner = page.getByRole('alert').filter({ hasText: 'Schema parse error' });
     await expect(banner).toBeVisible({ timeout: 5000 });
-    // The Concerto parser reports the position of the syntax error
-    await expect(banner).toContainText(/[Ll]ine \d+/);
-    // BROKEN_CTO is a concept without a name, one of the recognised mistakes
-    await expect(banner).toContainText('Hint: The declaration has no name');
+    // The offending line is shown as a compiler-style snippet with a caret
+    await expect(banner).toContainText('concept {');
+    // BROKEN_CTO is a concept without a name; the banner leads with the hint
+    // (the raw parser message stays on the left editor's squiggle)
+    await expect(banner).toContainText('The declaration has no name');
 
     // The last valid graph must stay on screen behind the banner
     await expect(page.locator('.react-flow__node').first()).toBeVisible();
@@ -53,45 +54,18 @@ test.describe('Graph parse error banner', () => {
 });
 
 test.describe('Graph semantic error banner', () => {
-  test('shows validator errors when the text parses but the model is invalid', async ({ page }) => {
+  test('shows the validator error when the text parses but the model is invalid', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText('Concerto Schema')).toBeVisible({ timeout: 15000 });
 
     await setEditorText(page, 'namespace org.x@1.0.0\nconcept Person {\n  o Address home\n}\n');
 
-    const banner = page.getByRole('alert').filter({ hasText: 'does not exist' });
+    const banner = page.getByRole('alert').filter({ hasText: 'Schema error' });
     await expect(banner).toBeVisible({ timeout: 5000 });
-    await expect(banner).toContainText('Line 3');
-    await expect(banner).toContainText('"home"');
-  });
-
-  test('lists every semantic problem at once', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByText('Concerto Schema')).toBeVisible({ timeout: 15000 });
-
-    await setEditorText(
-      page,
-      'namespace org.x@1.0.0\nconcept Person extends Base {\n  o Address home\n  o Money salary\n}\n',
-    );
-
-    const banner = page.getByRole('alert').filter({ hasText: 'Schema errors (3)' });
-    await expect(banner).toBeVisible({ timeout: 5000 });
-    await expect(banner).toContainText('extends "Base"');
-    await expect(banner).toContainText('"Address"');
-    await expect(banner).toContainText('"Money"');
+    // The banner leads with the friendly hint; the raw "Undeclared type" text
+    // stays on the left editor's squiggle. Points at the culprit's line.
+    await expect(banner).toContainText('references this type');
+    await expect(banner).toContainText(/See line \d+/);
   });
 });
 
-test.describe('Form view parse error banner', () => {
-  test('lists namespaces that fail to parse instead of hiding them silently', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByText('Concerto Schema')).toBeVisible({ timeout: 15000 });
-
-    await setEditorText(page, BROKEN_CTO);
-    await page.getByRole('button', { name: 'Form' }).click();
-
-    const banner = page.getByRole('alert').filter({ hasText: 'syntax error' });
-    await expect(banner).toBeVisible({ timeout: 5000 });
-    await expect(banner).toContainText('org.broken@1.0.0');
-  });
-});

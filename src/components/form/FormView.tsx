@@ -2,13 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import type { ConcertoModel, Declaration, Property } from '../../utils/graph/types';
-import { parseCto, describeParseError } from '../../utils/graph/ctoToGraph';
-import { findErrorHint } from '../../utils/errorHints';
+import { parseCto } from '../../utils/graph/ctoToGraph';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import { PropertyTree } from './PropertyTree';
 import { PropertySheet } from './PropertySheet';
 import { COLOR } from './theme';
-import '../errors.css';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +24,14 @@ interface FormViewProps {
   onModelChange: (ns: string, newCto: string) => void;
   onAddNamespace: () => void;
   onRemoveNamespace: (ns: string) => void;
+}
+
+function parseModelSafe(cto: string): ConcertoModel | null {
+  try {
+    return parseCto(cto);
+  } catch {
+    return null;
+  }
 }
 
 export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamespace }: FormViewProps) {
@@ -55,23 +61,16 @@ export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamesp
     setSelection(sel);
   }
 
-  // Parse all models. Broken ones are excluded from the form, but their
-  // errors are collected and shown in a banner instead of silently
-  // disappearing from the tree. Memoized so selection changes do not
-  // re-run the parser for every namespace.
-  const { parsedModels, parseErrors } = useMemo(() => {
+  // Parse all models, gracefully skipping broken ones. Memoized so selection
+  // changes do not re-run the parser for every namespace on each render.
+  const parsedModels = useMemo(() => {
     const parsed: Record<string, ConcertoModel> = {};
-    const errors: Array<{ ns: string; message: string; hint: string | null }> = [];
     for (const [ns, cto] of Object.entries(models)) {
       if (!cto) continue;
-      try {
-        parsed[ns] = parseCto(cto);
-      } catch (e) {
-        const message = describeParseError(e);
-        errors.push({ ns, message, hint: findErrorHint(message, cto) });
-      }
+      const model = parseModelSafe(cto);
+      if (model) parsed[ns] = model;
     }
-    return { parsedModels: parsed, parseErrors: errors };
+    return parsed;
   }, [models]);
 
   function handleAddDeclaration(ns: string) {
@@ -130,59 +129,39 @@ export function FormView({ models, onModelChange, onAddNamespace, onRemoveNamesp
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      {parseErrors.length > 0 && (
-        <div role="alert" className="error-banner error-banner-strip">
-          <div className="error-banner-title">
-            {parseErrors.length === 1
-              ? 'One namespace has a syntax error and is hidden from the form:'
-              : `${parseErrors.length} namespaces have syntax errors and are hidden from the form:`}
+    <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <PropertyTree
+        models={parsedModels}
+        selection={selection}
+        onSelect={handleSelect}
+        onAddNamespace={onAddNamespace}
+        onRemoveNamespace={onRemoveNamespace}
+        onAddDeclaration={handleAddDeclaration}
+        onAddProperty={handleAddProperty}
+        onAddEnumValue={handleAddEnumValue}
+      />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {saveError && (
+          <div
+            role="alert"
+            style={{
+              padding: '8px 16px',
+              background: '#3b1f24',
+              borderBottom: `1px solid ${COLOR.border}`,
+              color: COLOR.red,
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            Not saved, Concerto rejected the change: {saveError}
           </div>
-          {parseErrors.map(({ ns, message, hint }) => (
-            <div key={ns} className="error-banner-message">
-              <strong>{ns}</strong>: {message}
-              {hint && <div className="error-banner-hint">Hint: {hint}</div>}
-            </div>
-          ))}
-          <div className="error-banner-note">
-            Switch to the Graph or Code view to fix the schema text.
-          </div>
-        </div>
-      )}
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <PropertyTree
-          models={parsedModels}
+        )}
+        <PropertySheet
           selection={selection}
-          onSelect={handleSelect}
-          onAddNamespace={onAddNamespace}
+          models={parsedModels}
+          onModelChange={guardedModelChange}
           onRemoveNamespace={onRemoveNamespace}
-          onAddDeclaration={handleAddDeclaration}
-          onAddProperty={handleAddProperty}
-          onAddEnumValue={handleAddEnumValue}
         />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          {saveError && (
-            <div
-              role="alert"
-              style={{
-                padding: '8px 16px',
-                background: '#3b1f24',
-                borderBottom: `1px solid ${COLOR.border}`,
-                color: COLOR.red,
-                fontSize: 12,
-                lineHeight: 1.5,
-              }}
-            >
-              Not saved, Concerto rejected the change: {saveError}
-            </div>
-          )}
-          <PropertySheet
-            selection={selection}
-            models={parsedModels}
-            onModelChange={guardedModelChange}
-            onRemoveNamespace={onRemoveNamespace}
-          />
-        </div>
       </div>
     </div>
   );

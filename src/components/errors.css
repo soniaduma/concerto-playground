@@ -1,5 +1,5 @@
 /* Shared styles for the error recovery UI: the ErrorBoundary fallback and
-   the parse-error banners shown by the graph and form views. */
+   the parse-error banner shown over the graph canvas. */
 
 /* Parse-error banner (base) */
 
@@ -26,13 +26,6 @@
   opacity: 0.75;
 }
 
-/* Custom playground hint shown under the official Concerto message.
-   The hint text itself lives in src/utils/errorHints.ts. */
-.error-banner-hint {
-  margin-top: 4px;
-  color: #fbd38d;
-}
-
 /* Compiler-style excerpt of the offending line with a caret. */
 .error-banner-code {
   margin: 6px 0;
@@ -41,13 +34,6 @@
   color: #fed7d7;
   white-space: pre;
   overflow-x: auto;
-}
-
-/* One row per issue when several problems are listed at once. */
-.error-banner-item {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  margin-top: 2px;
 }
 
 /* Graph view variant: floats over the canvas; pointer events pass through
@@ -66,15 +52,6 @@
   max-height: 45vh;
   overflow: hidden;
   pointer-events: none;
-}
-
-/* Form view variant: full-width strip above the panel */
-.error-banner-strip {
-  flex-shrink: 0;
-  border-width: 0 0 1px 0;
-  background: rgba(116, 42, 42, 0.6);
-  max-height: 120px;
-  overflow-y: auto;
 }
 
 /* ErrorBoundary fallback */

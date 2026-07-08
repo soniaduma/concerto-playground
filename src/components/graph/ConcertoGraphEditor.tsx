@@ -25,7 +25,6 @@ import { NodeSearch } from './NodeSearch';
 import { useFocusNode } from './useFocusNode';
 import { parseCto, declarationsToGraph, describeParseError } from '../../utils/graph/ctoToGraph';
 import { findErrorHint, locateCulprit, buildErrorSnippet } from '../../utils/errorHints';
-import type { SemanticIssue } from '../../utils/semanticErrors';
 import '../errors.css';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
 import type { Declaration, ConcertoModel } from '../../utils/graph/types';
@@ -52,8 +51,6 @@ interface ConcertoGraphEditorProps {
   focusRequest?: { name: string; ts: number } | null;
   /** Semantic validation error for the current model (from validateCto). */
   validationError?: string | null;
-  /** All semantic issues found by the sweep, listed together in the banner. */
-  semanticIssues?: SemanticIssue[];
 }
 
 interface HistoryEntry {
@@ -80,7 +77,7 @@ function useDebouncedError<T>(value: T | null, delay: number): T | null {
   return debounced;
 }
 
-export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText, onImport, onExport, focusRequest, validationError, semanticIssues }: ConcertoGraphEditorProps) {
+export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText, onImport, onExport, focusRequest, validationError }: ConcertoGraphEditorProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -100,20 +97,17 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
 
   // The semantic validation error shown in the overlay banner when the text
-  // parses but the model is invalid. The hint and "See line N" note are only
-  // rendered when the sweep found no itemised issues, so they are only
-  // computed in that (rare) case.
+  // parses but the model is invalid. Points at the culprit's line when the
+  // official message names one.
   const rawSemanticError = useMemo(() => {
     if (!validationError) return null;
-    const issues = semanticIssues ?? [];
-    const culprit = issues.length === 0 ? locateCulprit(validationError, cto) : null;
+    const culprit = locateCulprit(validationError, cto);
     return {
       message: validationError,
-      hint: issues.length === 0 ? findErrorHint(validationError, cto) : null,
+      hint: findErrorHint(validationError, cto),
       location: culprit ? `See line ${culprit.line} on the left.` : null,
-      issues,
     };
-  }, [validationError, cto, semanticIssues]);
+  }, [validationError, cto]);
   const semanticError = useDebouncedError(rawSemanticError, 600);
 
   useEffect(() => {
@@ -401,32 +395,19 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
         {bannerError && (
           <div role="alert" className="error-banner error-banner-overlay">
             <div className="error-banner-title">
-              {parseError
-                ? 'Schema parse error'
-                : semanticError && semanticError.issues.length > 1
-                  ? `Schema errors (${semanticError.issues.length})`
-                  : 'Schema error'}
+              {parseError ? 'Schema parse error' : 'Schema error'}
             </div>
-            {!parseError && semanticError && semanticError.issues.length > 0 ? (
-              semanticError.issues.map((issue, i) => (
-                <div key={i} className="error-banner-item">
-                  {issue.line !== null && <strong>Line {issue.line}: </strong>}
-                  {issue.text}
-                </div>
-              ))
-            ) : (
-              <>
-                <div className="error-banner-message">{bannerError.message}</div>
-                {parseError?.snippet && <pre className="error-banner-code">{parseError.snippet}</pre>}
-                {bannerError.hint && <div className="error-banner-hint">Hint: {bannerError.hint}</div>}
-              </>
-            )}
+            {/* Lead with the friendly hint; the raw parser/validator message
+                stays on the left editor's squiggle. Fall back to the raw
+                message when no hint matches this error. */}
+            <div className="error-banner-message">{bannerError.hint ?? bannerError.message}</div>
+            {parseError?.snippet && <pre className="error-banner-code">{parseError.snippet}</pre>}
             {parseError && (
               <div className="error-banner-note">
                 Showing the last valid graph. Fix the text on the left to update it.
               </div>
             )}
-            {!parseError && semanticError?.location && semanticError.issues.length === 0 && (
+            {!parseError && semanticError?.location && (
               <div className="error-banner-note">{semanticError.location}</div>
             )}
           </div>
