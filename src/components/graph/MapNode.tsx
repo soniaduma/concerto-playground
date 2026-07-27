@@ -1,7 +1,9 @@
+import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge } from './KindBadge';
+import { nodePropsEqual } from './nodeMemo';
 
 interface MapNodeData {
   label: string;
@@ -10,7 +12,7 @@ interface MapNodeData {
   onDeleteDeclaration?: (declName: string) => void;
 }
 
-export function MapNode({ data, selected }: { data: MapNodeData; selected?: boolean }) {
+function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: boolean }) {
   const { declaration } = data;
   const map = declaration.mapDeclaration;
   const hasValueEdge = (data.edgeProperties ?? []).includes('_value');
@@ -98,6 +100,8 @@ export function MapNode({ data, selected }: { data: MapNodeData; selected?: bool
     </div>
   );
 }
+
+export const MapNode = memo(MapNodeComponent, nodePropsEqual);
 
 const handleStyle: React.CSSProperties = {
   width: 10, height: 10, background: '#38b2ac', borderRadius: '50%', border: '2px solid #1e2533',

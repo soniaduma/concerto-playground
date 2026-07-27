@@ -30,6 +30,7 @@ import { SHORTCUT_COMBOS } from '../../utils/shortcutCombos';
 import { parseCto, declarationsToGraph, describeParseError, type GraphContext } from '../../utils/graph/ctoToGraph';
 import { findErrorHint, locateCulprit, parseErrorPosition, buildSnippet, stripPosition } from '../../utils/errorHints';
 import { declarationsToCto } from '../../utils/graph/graphToCto';
+import { useRafBatchedNodeChanges } from '../../hooks/useRafBatchedNodeChanges';
 import type { Declaration, ConcertoModel } from '../../utils/graph/types';
 
 const nodeTypes: NodeTypes = {
@@ -101,9 +102,21 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  // Mirror of historyIndex so pushHistory can stay referentially stable; the
+  // node-injected callbacks depend on it and must not change identity on
+  // every push, or the memoized nodes would re-render for nothing.
+  const historyIndexRef = useRef(-1);
   const isUndoRedo = useRef(false);
 
   const nodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // Mirrors of the current graph state, read by the incremental sync without
+  // making the sync effect depend on (and re-run for) every nodes change.
+  const nodesRef = useRef<Node[]>([]);
+  const edgesRef = useRef<Edge[]>([]);
+  // The parent's onModelChange is recreated per render; a ref keeps the graph
+  // mutation callbacks stable so memoized nodes are not invalidated.
+  const onModelChangeRef = useRef(onModelChange);
+  onModelChangeRef.current = onModelChange;
 
   // The semantic validation error shown in the overlay banner when the text
   // parses but the model is invalid. The snippet points a caret at the
@@ -128,20 +141,28 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   const lastHistoryCtoRef = useRef<string | null>(null);
 
   useEffect(() => {
+    nodesRef.current = nodes;
     for (const node of nodes) {
       nodePositionsRef.current.set(node.id, { ...node.position });
     }
   }, [nodes]);
 
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
+
   const pushHistory = useCallback((entry: HistoryEntry) => {
+    const base = historyIndexRef.current;
     setHistory((prev) => {
-      const truncated = prev.slice(0, historyIndex + 1);
+      const truncated = prev.slice(0, base + 1);
       const next = [...truncated, entry];
       if (next.length > MAX_HISTORY) next.shift();
       return next;
     });
-    setHistoryIndex((prev) => Math.min(prev + 1, MAX_HISTORY - 1));
-  }, [historyIndex]);
+    const nextIndex = Math.min(base + 1, MAX_HISTORY - 1);
+    historyIndexRef.current = nextIndex;
+    setHistoryIndex(nextIndex);
+  }, []);
 
   useEffect(() => {
     if (updatingFromGraph.current) {
@@ -151,15 +172,19 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     try {
       const parsed = parseCto(cto);
       setModel(parsed);
-      const graph = declarationsToGraph(parsed.declarations, graphContext);
-      const nodesWithPositions = graph.nodes.map((node) => {
-        const savedPos = nodePositionsRef.current.get(node.id);
-        return savedPos ? { ...node, position: savedPos } : node;
+      // Incremental sync: unchanged declarations keep their exact node
+      // objects, changed ones keep their position, and only new declarations
+      // are placed. Nothing else moves, and memoized nodes skip re-rendering.
+      const graph = declarationsToGraph(parsed.declarations, {
+        ...graphContext,
+        previousNodes: nodesRef.current,
+        previousEdges: edgesRef.current,
+        savedPositions: nodePositionsRef.current,
       });
-      setNodes(nodesWithPositions);
+      setNodes(graph.nodes);
       setEdges(graph.edges);
       if (!isUndoRedo.current && lastHistoryCtoRef.current !== cto) {
-        pushHistory({ model: parsed, nodes: nodesWithPositions, edges: graph.edges });
+        pushHistory({ model: parsed, nodes: graph.nodes, edges: graph.edges });
         lastHistoryCtoRef.current = cto;
       }
       isUndoRedo.current = false;
@@ -183,21 +208,22 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     const newModel = { ...cur, declarations: newDeclarations };
     const newCto = declarationsToCto(newModel);
     setModel(newModel);
-    const graph = declarationsToGraph(newDeclarations, graphContextRef.current);
-    const nodesWithPositions = graph.nodes.map((node) => {
-      const savedPos = nodePositionsRef.current.get(node.id);
-      return savedPos ? { ...node, position: savedPos } : node;
+    const graph = declarationsToGraph(newDeclarations, {
+      ...graphContextRef.current,
+      previousNodes: nodesRef.current,
+      previousEdges: edgesRef.current,
+      savedPositions: nodePositionsRef.current,
     });
-    setNodes(nodesWithPositions);
+    setNodes(graph.nodes);
     setEdges(graph.edges);
-    pushHistory({ model: newModel, nodes: nodesWithPositions, edges: graph.edges });
+    pushHistory({ model: newModel, nodes: graph.nodes, edges: graph.edges });
     // A graph edit regenerates the CTO from the last valid model, so any
     // pending text parse error is now stale.
     setRawParseError(null);
     lastHistoryCtoRef.current = newCto;
     updatingFromGraph.current = true;
-    onModelChange?.(newCto);
-  }, [setModel, setNodes, setEdges, onModelChange, pushHistory]);
+    onModelChangeRef.current?.(newCto);
+  }, [setModel, setNodes, setEdges, pushHistory]);
 
   const handleAddDeclaration = useCallback((decl: Declaration) => {
     updateModelAndSync([...modelRef.current.declarations, decl]);
@@ -266,6 +292,7 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     const newIndex = historyIndex - 1;
     const entry = history[newIndex];
     isUndoRedo.current = true;
+    historyIndexRef.current = newIndex;
     setHistoryIndex(newIndex);
     setModel(entry.model);
     setNodes(entry.nodes);
@@ -277,14 +304,15 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     updatingFromGraph.current = true;
     const entryCto = declarationsToCto(entry.model);
     lastHistoryCtoRef.current = entryCto;
-    onModelChange?.(entryCto);
-  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
+    onModelChangeRef.current?.(entryCto);
+  }, [history, historyIndex, setModel, setNodes, setEdges]);
 
   const handleRedo = useCallback(() => {
     if (historyIndex >= history.length - 1) return;
     const newIndex = historyIndex + 1;
     const entry = history[newIndex];
     isUndoRedo.current = true;
+    historyIndexRef.current = newIndex;
     setHistoryIndex(newIndex);
     setModel(entry.model);
     setNodes(entry.nodes);
@@ -296,8 +324,8 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     updatingFromGraph.current = true;
     const entryCto = declarationsToCto(entry.model);
     lastHistoryCtoRef.current = entryCto;
-    onModelChange?.(entryCto);
-  }, [history, historyIndex, setNodes, setEdges, onModelChange]);
+    onModelChangeRef.current?.(entryCto);
+  }, [history, historyIndex, setModel, setNodes, setEdges]);
 
   // Escape closes the topmost overlay only: dialogs render above the search
   // panel, so they go first.
@@ -337,7 +365,12 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
   // semantically validated anyway, so the parse message is the actionable one.
   const bannerError = parseError ?? semanticError;
 
-  const onNodeDragStop = useCallback((_event: React.MouseEvent, _node: Node) => {
+  const onNodeDragStop = useCallback((_event: React.MouseEvent, _node: Node, draggedNodes: Node[]) => {
+    // The rAF-batched change queue may still be one frame behind at drag
+    // stop; the event carries the final positions, so record them first.
+    for (const dragged of draggedNodes) {
+      nodePositionsRef.current.set(dragged.id, { ...dragged.position });
+    }
     const currentNodes = nodes.map((n) => {
       const pos = nodePositionsRef.current.get(n.id);
       return pos ? { ...n, position: pos } : n;
@@ -374,6 +407,10 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     updateModelAndSync(decls);
   }, [updateModelAndSync]);
 
+  // Drag coordinates arrive faster than the display refreshes; batching them
+  // into one state update per animation frame keeps cluster drags smooth.
+  const handleNodesChange = useRafBatchedNodeChanges(onNodesChange);
+
   const onConnect = useCallback((connection: Connection) => {
     if (connection.source && connection.target && connection.source !== connection.target) {
       // Imported nodes use namespace-qualified ids; a property created against
@@ -397,20 +434,54 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
     setConnectDialog(null);
   }, [connectDialog, handleSetSuperType, handleAddProperty]);
 
-  const nodesWithCallbacks = nodes.map((node) => ({
-    ...node,
-    data: {
-      ...node.data,
-      onAddProperty: (declName: string) => setActiveDialog({ type: 'property', declName }),
-      onDeleteProperty: handleDeleteProperty,
-      onDeleteDeclaration: handleDeleteDeclaration,
-      onToggleAbstract: handleToggleAbstract,
-      onSetInheritance: (declName: string) => setActiveDialog({ type: 'inheritance', declName }),
-      onAddEnumValue: (declName: string) => setActiveDialog({ type: 'enum-value', declName }),
-      onDeleteEnumValue: handleDeleteEnumValue,
-      onNavigateToType,
-    },
-  }));
+  const openPropertyDialog = useCallback((declName: string) => setActiveDialog({ type: 'property', declName }), []);
+  const openInheritanceDialog = useCallback((declName: string) => setActiveDialog({ type: 'inheritance', declName }), []);
+  const openEnumValueDialog = useCallback((declName: string) => setActiveDialog({ type: 'enum-value', declName }), []);
+  // The parent's onNavigateToType may change identity per render; a ref-backed
+  // wrapper keeps the node-injected callback stable so memoized nodes and the
+  // wrap cache below are not invalidated.
+  const onNavigateToTypeRef = useRef(onNavigateToType);
+  onNavigateToTypeRef.current = onNavigateToType;
+  const handleNavigateToType = useCallback(
+    (name: string, namespace: string) => onNavigateToTypeRef.current?.(name, namespace),
+    [],
+  );
+
+  // Injects the (all stable) callbacks into each node's data. The WeakMap
+  // keyed on the underlying node object keeps the wrapped object identical
+  // for nodes the incremental sync reused, so memoized node components can
+  // skip on reference equality alone.
+  const wrapCache = useRef(new WeakMap<Node, Node>());
+  const nodesWithCallbacks = useMemo(() => nodes.map((node) => {
+    const cached = wrapCache.current.get(node);
+    if (cached) return cached;
+    const wrapped: Node = {
+      ...node,
+      data: {
+        ...node.data,
+        onAddProperty: openPropertyDialog,
+        onDeleteProperty: handleDeleteProperty,
+        onDeleteDeclaration: handleDeleteDeclaration,
+        onToggleAbstract: handleToggleAbstract,
+        onSetInheritance: openInheritanceDialog,
+        onAddEnumValue: openEnumValueDialog,
+        onDeleteEnumValue: handleDeleteEnumValue,
+        onNavigateToType: handleNavigateToType,
+      },
+    };
+    wrapCache.current.set(node, wrapped);
+    return wrapped;
+  }), [
+    nodes,
+    openPropertyDialog,
+    handleDeleteProperty,
+    handleDeleteDeclaration,
+    handleToggleAbstract,
+    openInheritanceDialog,
+    openEnumValueDialog,
+    handleDeleteEnumValue,
+    handleNavigateToType,
+  ]);
 
   return (
     <ReactFlowProvider>
@@ -438,7 +509,7 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
         <ReactFlow
           nodes={nodesWithCallbacks}
           edges={edges}
-          onNodesChange={onNodesChange}
+          onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onDelete={onDeleteSelection}
@@ -446,6 +517,7 @@ export function ConcertoGraphEditor({ cto, onModelChange, showText, onToggleText
           onNodeDragStop={onNodeDragStop}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onlyRenderVisibleElements
           fitView
           fitViewOptions={{ padding: 0.3 }}
           style={{ background: '#1a202c' }}

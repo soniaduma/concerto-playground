@@ -1,6 +1,7 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { Declaration, ConcertoModel, ImportStatement, Property, PropertyValidator, Decorator, IdentifiedKind, ExternalTypeMap } from './types';
 import { PRIMITIVE_TYPES } from './types';
+import { declarationEqual, stringArrayEqual } from './modelDiff';
 
 import { Parser as ParserModule } from '@accordproject/concerto-cto';
 import { ModelManager } from '@accordproject/concerto-core';
@@ -317,6 +318,16 @@ function estimateNodeHeight(decl: Declaration): number {
   return headerHeight + Math.max(decl.properties.length, 1) * rowHeight + buttonHeight + padding;
 }
 
+// Horizontal distance between layout columns and vertical gap between nodes.
+// Shared by the full tree layout and the incremental placement of new nodes.
+const LAYOUT_SPACING_X = 380;
+const LAYOUT_GAP_Y = 40;
+
+// Approximate node width before the browser has measured it. With viewport
+// culling active (onlyRenderVisibleElements), off-screen nodes are never
+// mounted, so fitView and the culling test need these initial dimensions.
+const NODE_INITIAL_WIDTH = 280;
+
 function computeTreeLayout(declarations: Declaration[]): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
   if (declarations.length === 0) return positions;
@@ -384,8 +395,8 @@ function computeTreeLayout(declarations: Declaration[]): Map<string, { x: number
   const heights = new Map<string, number>();
   for (const decl of declarations) heights.set(decl.name, estimateNodeHeight(decl));
 
-  const spacingX = 380;
-  const gapY = 40;
+  const spacingX = LAYOUT_SPACING_X;
+  const gapY = LAYOUT_GAP_Y;
 
   for (let depth = 0; depth < layers.length; depth++) {
     const layer = layers[depth];
@@ -420,12 +431,131 @@ interface ExternalRef {
 
 const EXTERNAL_NODE_HEIGHT = 100;
 
-export function declarationsToGraph(declarations: Declaration[], context: GraphContext = {}): { nodes: Node[]; edges: Edge[] } {
+/**
+ * The previous graph state, used for incremental updates. When provided (and
+ * at least one declaration survives from the previous graph), the sync
+ * becomes a delta: unchanged declarations keep their exact node objects,
+ * changed ones keep their position, and only brand new declarations get a
+ * position computed, relative to their neighbors. The global tree layout
+ * only runs for a fresh graph (first load, or a model with no overlap).
+ */
+export interface GraphSyncContext extends GraphContext {
+  previousNodes?: Node[];
+  previousEdges?: Edge[];
+  /** Last known drag positions, kept across node remove/re-add cycles. */
+  savedPositions?: Map<string, { x: number; y: number }>;
+}
+
+// Reuses the previous edge object when the rebuilt edge is identical, so
+// memoized edge components see referentially stable props. The stroke check
+// covers the one visual attribute not implied by the id: a property turning
+// into a relationship (or back) keeps the same id and label but recolors.
+function reuseEdge(prev: Edge | undefined, next: Edge): Edge {
+  if (
+    prev &&
+    prev.source === next.source &&
+    prev.target === next.target &&
+    prev.sourceHandle === next.sourceHandle &&
+    prev.targetHandle === next.targetHandle &&
+    prev.label === next.label &&
+    (prev.style as { stroke?: string } | undefined)?.stroke ===
+      (next.style as { stroke?: string } | undefined)?.stroke
+  ) {
+    return prev;
+  }
+  return next;
+}
+
+// Positions freshly added declarations without touching anyone else: each new
+// node lands in the column to the right of its first positioned neighbor
+// (or below the leftmost column when it has no connections), stacked under
+// whatever already occupies that column.
+function placeNewNodes(
+  pending: { node: Node; decl: Declaration }[],
+  allNodes: Node[],
+  declarations: Declaration[],
+): void {
+  const declByName = new Map(declarations.map((d) => [d.name, d]));
+  const pendingSet = new Set(pending.map((p) => p.node));
+  const positioned = new Map<string, Node>();
+  for (const n of allNodes) {
+    if (!pendingSet.has(n)) positioned.set(n.id, n);
+  }
+
+  const heightOf = (n: Node) => {
+    const measured = n.measured?.height;
+    if (typeof measured === 'number') return measured;
+    const decl = declByName.get(n.id);
+    return decl ? estimateNodeHeight(decl) : 150;
+  };
+
+  const bottomOfColumn = (x: number) => {
+    let bottom = -Infinity;
+    for (const n of positioned.values()) {
+      if (Math.abs(n.position.x - x) < LAYOUT_SPACING_X / 2) {
+        bottom = Math.max(bottom, n.position.y + heightOf(n));
+      }
+    }
+    return bottom;
+  };
+
+  for (const { node, decl } of pending) {
+    const neighborNames = new Set<string>();
+    if (decl.superType) neighborNames.add(decl.superType);
+    if (decl.scalarExtends) neighborNames.add(decl.scalarExtends);
+    for (const p of decl.properties) neighborNames.add(p.type);
+    for (const other of declarations) {
+      if (other.name === decl.name) continue;
+      if (
+        other.superType === decl.name ||
+        other.scalarExtends === decl.name ||
+        other.properties.some((p) => p.type === decl.name)
+      ) {
+        neighborNames.add(other.name);
+      }
+    }
+
+    let anchor: Node | undefined;
+    for (const name of neighborNames) {
+      anchor = positioned.get(name);
+      if (anchor) break;
+    }
+
+    let x: number;
+    let y: number;
+    if (anchor) {
+      x = anchor.position.x + LAYOUT_SPACING_X;
+      const bottom = bottomOfColumn(x);
+      y = bottom === -Infinity ? anchor.position.y : bottom + LAYOUT_GAP_Y;
+    } else {
+      x = 0;
+      for (const n of positioned.values()) x = Math.min(x, n.position.x);
+      const bottom = bottomOfColumn(x);
+      y = bottom === -Infinity ? 0 : bottom + LAYOUT_GAP_Y;
+    }
+    node.position = { x, y };
+    positioned.set(node.id, node);
+  }
+}
+
+export function declarationsToGraph(
+  declarations: Declaration[],
+  context: GraphSyncContext = {},
+): { nodes: Node[]; edges: Edge[] } {
   const { externalTypes = {}, workspaceDeclarations = {} } = context;
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   const declNames = new Set(declarations.map((d) => d.name));
-  const positions = computeTreeLayout(declarations);
+
+  const prevById = new Map((context?.previousNodes ?? []).map((n) => [n.id, n]));
+  const prevEdgeById = new Map((context?.previousEdges ?? []).map((e) => [e.id, e]));
+  // Incremental only when something survives from the previous graph; a model
+  // with no overlap (first load, example switch, full paste) is a fresh graph
+  // and gets the global tree layout.
+  const incremental =
+    prevById.size > 0 && declarations.some((d) => prevById.has(d.name));
+  const positions = incremental ? null : computeTreeLayout(declarations);
+  const pendingPlacement: { node: Node; decl: Declaration }[] = [];
 
   // Resolve a type reference that does not point at a local declaration:
   // either a namespace-qualified name or a name brought in by an import.
@@ -466,7 +596,6 @@ export function declarationsToGraph(declarations: Declaration[], context: GraphC
     else if (decl.type === 'map') nodeType = 'mapNode';
     else if (decl.type === 'scalar') nodeType = 'scalarNode';
 
-    const pos = positions.get(decl.name) || { x: 0, y: 0 };
     const propsToEdge = decl.type === 'map'
       ? decl.properties.filter((p) => p.name === '_value')
       : decl.properties;
@@ -479,19 +608,47 @@ export function declarationsToGraph(declarations: Declaration[], context: GraphC
       .filter((_, i) => propTargets[i])
       .map((p) => p.name);
 
-    nodes.push({
-      id: decl.name,
-      type: nodeType,
-      position: pos,
-      data: { label: decl.name, declaration: decl, edgeProperties },
-    });
+    const prev = incremental ? prevById.get(decl.name) : undefined;
+    if (prev) {
+      const prevDecl = prev.data.declaration as Declaration | undefined;
+      if (
+        prev.type === nodeType &&
+        prevDecl &&
+        declarationEqual(prevDecl, decl) &&
+        stringArrayEqual(prev.data.edgeProperties as string[] | undefined, edgeProperties)
+      ) {
+        // Untouched declaration: the previous node object is reused as-is,
+        // which lets the memoized node component skip by reference.
+        nodes.push(prev);
+      } else {
+        // Changed declaration: fresh data, same position.
+        nodes.push({
+          ...prev,
+          type: nodeType,
+          data: { label: decl.name, declaration: decl, edgeProperties },
+        });
+      }
+    } else {
+      const saved = context?.savedPositions?.get(decl.name);
+      const pos = saved ?? (positions ? positions.get(decl.name) || { x: 0, y: 0 } : null);
+      const node: Node = {
+        id: decl.name,
+        type: nodeType,
+        position: pos ?? { x: 0, y: 0 },
+        initialWidth: NODE_INITIAL_WIDTH,
+        initialHeight: estimateNodeHeight(decl),
+        data: { label: decl.name, declaration: decl, edgeProperties },
+      };
+      if (!pos) pendingPlacement.push({ node, decl });
+      nodes.push(node);
+    }
 
     if (decl.superType) {
       const superTarget = isLocal(decl.superType, decl.superTypeNamespace)
         ? decl.superType
         : registerExternal(decl.superType, decl.superTypeNamespace)?.id;
       if (superTarget) {
-        edges.push({
+        edges.push(reuseEdge(prevEdgeById.get(`${decl.name}-extends-${superTarget}`), {
           id: `${decl.name}-extends-${superTarget}`,
           source: decl.name, target: superTarget,
           sourceHandle: 'bottom',
@@ -503,7 +660,7 @@ export function declarationsToGraph(declarations: Declaration[], context: GraphC
           labelBgStyle: { fill: '#1a202c', fillOpacity: 0.8 },
           labelBgPadding: [6, 3] as [number, number],
           labelBgBorderRadius: 4,
-        });
+        }));
       }
     }
 
@@ -511,7 +668,7 @@ export function declarationsToGraph(declarations: Declaration[], context: GraphC
       const propTarget = propTargets[i];
       if (propTarget) {
         const isRel = prop.isRelationship;
-        edges.push({
+        edges.push(reuseEdge(prevEdgeById.get(`${decl.name}-${prop.name}-${propTarget}`), {
           id: `${decl.name}-${prop.name}-${propTarget}`,
           source: decl.name, target: propTarget,
           sourceHandle: `prop:${prop.name}`,
@@ -528,30 +685,56 @@ export function declarationsToGraph(declarations: Declaration[], context: GraphC
           labelBgStyle: { fill: '#1a202c', fillOpacity: 0.8 },
           labelBgPadding: [6, 3] as [number, number],
           labelBgBorderRadius: 4,
-        });
+        }));
       }
     });
   });
 
   // Imported types get their own column to the right of the local layout so
-  // they read as external to the current file.
+  // they read as external to the current file. In an incremental sync there
+  // is no global layout to measure, so the column anchors to the rightmost
+  // surviving node instead, and unchanged imported nodes keep their exact
+  // objects (and any dragged position) just like local ones.
   if (externalNodes.size > 0) {
     let maxX = 0;
-    for (const pos of positions.values()) maxX = Math.max(maxX, pos.x);
+    if (positions) {
+      for (const pos of positions.values()) maxX = Math.max(maxX, pos.x);
+    } else {
+      for (const node of nodes) maxX = Math.max(maxX, node.position.x);
+    }
     const externalX = declarations.length > 0 ? maxX + 380 : 0;
     const externals = [...externalNodes.values()];
     const gapY = 40;
     const totalHeight = externals.length * EXTERNAL_NODE_HEIGHT + (externals.length - 1) * gapY;
     let y = -totalHeight / 2;
     for (const ext of externals) {
-      nodes.push({
-        id: ext.id,
-        type: 'importedNode',
-        position: { x: externalX, y },
-        data: { label: ext.name, namespace: ext.namespace, resolved: ext.resolved },
-      });
+      const prev = incremental ? prevById.get(ext.id) : undefined;
+      const prevData = prev?.data as
+        | { label?: string; namespace?: string; resolved?: boolean }
+        | undefined;
+      if (
+        prev &&
+        prev.type === 'importedNode' &&
+        prevData?.label === ext.name &&
+        prevData?.namespace === ext.namespace &&
+        prevData?.resolved === ext.resolved
+      ) {
+        nodes.push(prev);
+      } else {
+        const saved = context?.savedPositions?.get(ext.id);
+        nodes.push({
+          id: ext.id,
+          type: 'importedNode',
+          position: saved ?? prev?.position ?? { x: externalX, y },
+          data: { label: ext.name, namespace: ext.namespace, resolved: ext.resolved },
+        });
+      }
       y += EXTERNAL_NODE_HEIGHT + gapY;
     }
+  }
+
+  if (pendingPlacement.length > 0) {
+    placeNewNodes(pendingPlacement, nodes, declarations);
   }
 
   return { nodes, edges };

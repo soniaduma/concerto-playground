@@ -1,7 +1,9 @@
+import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge } from './KindBadge';
+import { nodePropsEqual } from './nodeMemo';
 import './graph.css';
 
 interface EnumNodeData {
@@ -12,7 +14,7 @@ interface EnumNodeData {
   onDeleteDeclaration?: (declName: string) => void;
 }
 
-export function EnumNode({ data, selected }: { data: EnumNodeData; selected?: boolean }) {
+function EnumNodeComponent({ data, selected }: { data: EnumNodeData; selected?: boolean }) {
   const { declaration } = data;
   const showFull = useStore((s) => s.transform[2] >= SEMANTIC_ZOOM_THRESHOLD);
   const valueCount = declaration.enumValues.length;
@@ -63,3 +65,5 @@ export function EnumNode({ data, selected }: { data: EnumNodeData; selected?: bo
     </div>
   );
 }
+
+export const EnumNode = memo(EnumNodeComponent, nodePropsEqual);

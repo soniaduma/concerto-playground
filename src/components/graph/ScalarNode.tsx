@@ -1,7 +1,9 @@
+import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge } from './KindBadge';
+import { nodePropsEqual } from './nodeMemo';
 
 interface ScalarNodeData {
   label: string;
@@ -9,7 +11,7 @@ interface ScalarNodeData {
   onDeleteDeclaration?: (declName: string) => void;
 }
 
-export function ScalarNode({ data, selected }: { data: ScalarNodeData; selected?: boolean }) {
+function ScalarNodeComponent({ data, selected }: { data: ScalarNodeData; selected?: boolean }) {
   const { declaration } = data;
   const v = declaration.scalarValidators || {};
   const showFull = useStore((s) => s.transform[2] >= SEMANTIC_ZOOM_THRESHOLD);
@@ -96,6 +98,8 @@ export function ScalarNode({ data, selected }: { data: ScalarNodeData; selected?
     </div>
   );
 }
+
+export const ScalarNode = memo(ScalarNodeComponent, nodePropsEqual);
 
 const handleStyle: React.CSSProperties = {
   width: 10, height: 10, background: '#ed64a6', borderRadius: '50%', border: '2px solid #1e2533',

@@ -1,6 +1,7 @@
+import { memo } from 'react';
 import { getBezierPath, EdgeLabelRenderer, BaseEdge, Position, type EdgeProps } from '@xyflow/react';
 
-export function FloatingEdge({
+function FloatingEdgeComponent({
   id,
   sourceX,
   sourceY,
@@ -52,3 +53,8 @@ export function FloatingEdge({
     </>
   );
 }
+
+// Shallow memo is enough here: edge objects are reused by identity across
+// graph syncs, so unchanged edges keep the same style/label references and
+// only edges whose endpoints actually moved re-render.
+export const FloatingEdge = memo(FloatingEdgeComponent);

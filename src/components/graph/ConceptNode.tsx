@@ -1,8 +1,10 @@
+import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge, HintAnchor } from './KindBadge';
 import { getConceptHint } from '../../utils/conceptHints';
+import { nodePropsEqual } from './nodeMemo';
 import './graph.css';
 
 const TYPE_COLORS: Record<string, string> = {
@@ -33,7 +35,7 @@ interface ConceptNodeData {
   onSetInheritance?: (declName: string) => void;
 }
 
-export function ConceptNode({ data, selected }: { data: ConceptNodeData; selected?: boolean }) {
+function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selected?: boolean }) {
   const { declaration } = data;
   const colors = DECL_COLORS[declaration.type] || DECL_COLORS.concept;
   const edgeProperties = new Set(data.edgeProperties ?? []);
@@ -185,3 +187,7 @@ export function ConceptNode({ data, selected }: { data: ConceptNodeData; selecte
     </div>
   );
 }
+
+// Memoized so that re-parses and drags of other nodes do not re-render this
+// one; nodePropsEqual compares declaration content instead of references.
+export const ConceptNode = memo(ConceptNodeComponent, nodePropsEqual);

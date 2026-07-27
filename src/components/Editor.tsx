@@ -5,6 +5,13 @@ import { locateCulprit, parseErrorPosition } from "../utils/errorHints";
 import { getConceptHint } from "../utils/conceptHints";
 import { isReferenceToken, tokenTypeAt, tokenizeWithCache } from "../utils/editorTokens";
 import type { TypeLinkTarget } from "../utils/graph/types";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
+
+// How long a typing burst must be quiet before the text is dispatched to the
+// app state. Every dispatch triggers a full parse, graph sync and validation,
+// which is too expensive to run per keystroke on large models. Monaco keeps
+// its own text in the meantime, so typing itself stays responsive.
+const EDITOR_CHANGE_DEBOUNCE_MS = 300;
 
 // Hover hints only make sense on real language tokens; the same words
 // inside comments, strings or regex literals are plain text.
@@ -350,6 +357,48 @@ export function Editor({
   targetsRef.current = new Map((linkTargets ?? []).map((t) => [t.name, t]));
   onNavigateRef.current = onNavigate;
 
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  // The last text this editor dispatched upward. Used to tell an echo of our
+  // own dispatch apart from an external rewrite of the value prop.
+  const lastEmittedRef = useRef<string | null>(null);
+  // Text modifications wait out the debounce window before reaching the app
+  // state; the pending value flushes before outside interactions and on
+  // unmount so the last keystrokes always land before anything reads the
+  // model, and never after it changed under us.
+  const debouncedChange = useDebouncedCallback<string>(
+    (text) => {
+      lastEmittedRef.current = text;
+      onChangeRef.current?.(text);
+    },
+    EDITOR_CHANGE_DEBOUNCE_MS,
+  );
+
+  // An external value change (graph edit, example load, undo) while a
+  // dispatch is pending means another source of truth rewrote the text; the
+  // stale keystroke dispatch must not overwrite it.
+  useEffect(() => {
+    if (debouncedChange.isPending() && value !== lastEmittedRef.current) {
+      debouncedChange.cancel();
+    }
+  }, [value, debouncedChange]);
+
+  // Clicking anywhere outside the editor (a toolbar button, the graph, an
+  // example) flushes the pending edit first. Capture-phase mousedown runs
+  // before the target's click handler, so whatever that click does always
+  // sees the up-to-date model. Monaco's own blur event cannot be used for
+  // this: it is emitted asynchronously and can arrive after the click.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!debouncedChange.isPending()) return;
+      const editorDom = editorRef.current?.getDomNode();
+      if (editorDom && e.target instanceof Node && editorDom.contains(e.target)) return;
+      debouncedChange.flush();
+    };
+    document.addEventListener("mousedown", handler, true);
+    return () => document.removeEventListener("mousedown", handler, true);
+  }, [debouncedChange]);
+
   const handleMount: OnMount = (editor) => {
     editorRef.current = editor;
     setEditorReady(true);
@@ -379,6 +428,9 @@ export function Editor({
         onNavigateRef.current(target.name, target.namespace);
       }
     });
+    // Keyboard-driven focus changes (Tab, command palette) also flush; mouse
+    // interactions are covered earlier by the capture-phase mousedown above.
+    editor.onDidBlurEditorWidget(() => debouncedChange.flush());
   };
 
   // Underline declared type names so they read as clickable references.
@@ -446,7 +498,7 @@ export function Editor({
       height={height}
       language={language}
       value={value}
-      onChange={(v) => onChange?.(v ?? "")}
+      onChange={(v) => debouncedChange.schedule(v ?? "")}
       beforeMount={setupMonaco}
       onMount={handleMount}
       theme="concerto-dark"
