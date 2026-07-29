@@ -1,5 +1,6 @@
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
+import { HANDLE_ID } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 
 interface ScalarNodeData {
@@ -27,7 +28,7 @@ export function ScalarNode({ data, selected }: { data: ScalarNodeData; selected?
       transition: 'border-color 0.2s, box-shadow 0.2s',
     }}>
       <Handle type="target" position={Position.Top} style={handleStyle} />
-      <Handle type="target" position={Position.Left} id="left" style={handleStyle} />
+      <Handle type="target" position={Position.Left} id={HANDLE_ID.left} style={handleStyle} />
 
       <div style={{
         padding: '10px 14px',
