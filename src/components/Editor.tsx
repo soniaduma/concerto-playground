@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import { locateCulprit, parseErrorPosition } from "../utils/errorHints";
 import { getConceptHint } from "../utils/conceptHints";
-import { tokenTypeAt, tokenizeWithCache } from "../utils/editorTokens";
+import { isReferenceToken, tokenTypeAt, tokenizeWithCache } from "../utils/editorTokens";
 import type { TypeLinkTarget } from "../utils/graph/types";
 
 // Hover hints only make sense on real language tokens; the same words
@@ -93,15 +93,31 @@ const setupMonaco: BeforeMount = (monacoInstance) => {
     tokenizer: {
       root: [
         { include: "@whitespace" },
-        // Relationship arrow
-        [/-->/, "relationship"],
+        // Import targets are reference positions, so imported names stay
+        // clickable; the type name (or braced type list) gets its own token
+        // while the namespace path stays a plain identifier.
+        [
+          /(import)(\s+)([\w.]+(?:@[\w.-]+)?\.)(\{)([^}\n]*)(\})/,
+          ["keyword", "white", "identifier", "delimiter", "identifier.reference", "delimiter"],
+        ],
+        [
+          /(import)(\s+)([\w.]+(?:@[\w.-]+)?\.)(\w+)/,
+          ["keyword", "white", "identifier", "identifier.reference"],
+        ],
+        // Relationship arrow: the next identifier is a type reference
+        [/-->/, { token: "relationship", next: "@typeRef" }],
         // Decorators
         [/@\w+/, "decorator"],
-        // Identifiers and keywords
+        // Identifiers and keywords. Only positions that can hold a type
+        // reference switch to typeRef; every other identifier (declaration
+        // names, property names) stays a plain identifier.
         [
           /[a-zA-Z_]\w*/,
           {
             cases: {
+              o: { token: "keyword", next: "@typeRef" },
+              extends: { token: "keyword", next: "@typeRef" },
+              enum: { token: "keyword", next: "@enumDecl" },
               "@keywords": "keyword",
               "@typeKeywords": "type",
               "@default": "identifier",
@@ -115,6 +131,47 @@ const setupMonaco: BeforeMount = (monacoInstance) => {
         [/\d+(\.\d+)?/, "number"],
         // Regex literals (e.g. regex=/\d+/)
         [/\/[^/\n]+\/[gimsuy]*/, "regexp"],
+      ],
+      // The single identifier right after o, --> or extends is a type
+      // reference; primitives keep their type token and anything else is
+      // re-lexed by the root state.
+      typeRef: [
+        [/[ \t]+/, "white"],
+        [
+          /[a-zA-Z_][\w.]*/,
+          {
+            cases: {
+              "@typeKeywords": { token: "type", next: "@pop" },
+              "@keywords": { token: "keyword", next: "@pop" },
+              "@default": { token: "identifier.reference", next: "@pop" },
+            },
+          },
+        ],
+        [/./, { token: "@rematch", next: "@pop" }],
+      ],
+      // Enum bodies hold values, not type references: an "o Person" inside an
+      // enum declares a value named Person, so o must not switch to typeRef.
+      enumDecl: [
+        { include: "@whitespace" },
+        [/[a-zA-Z_]\w*/, "identifier"],
+        [/\{/, { token: "delimiter", switchTo: "@enumBody" }],
+        [/./, { token: "@rematch", next: "@pop" }],
+      ],
+      enumBody: [
+        { include: "@whitespace" },
+        [/@\w+/, "decorator"],
+        [/"/, "string", "@string"],
+        [
+          /[a-zA-Z_]\w*/,
+          {
+            cases: {
+              "@keywords": "keyword",
+              "@default": "identifier",
+            },
+          },
+        ],
+        [/\d+(\.\d+)?/, "number"],
+        [/\}/, { token: "delimiter", next: "@pop" }],
       ],
       string: [
         [/[^\\"]+/, "string"],
@@ -300,7 +357,21 @@ export function Editor({
       if (!onNavigateRef.current || !e.event.leftButton) return;
       const pos = e.target.position;
       if (!pos) return;
-      const word = editor.getModel()?.getWordAtPosition(pos);
+      const model = editor.getModel();
+      if (!model) return;
+      // Only navigate from a decorated reference; the same word inside a
+      // comment or string carries no link decoration and must stay inert.
+      const clickRange = {
+        startLineNumber: pos.lineNumber,
+        startColumn: pos.column,
+        endLineNumber: pos.lineNumber,
+        endColumn: pos.column,
+      };
+      const onLink = model
+        .getDecorationsInRange(clickRange)
+        .some((d) => d.options.inlineClassName === LINK_CLASS);
+      if (!onLink) return;
+      const word = model.getWordAtPosition(pos);
       if (!word) return;
       const target = targetsRef.current.get(word.word);
       // Unresolved imports are not navigable; their decoration explains why.
@@ -322,6 +393,14 @@ export function Editor({
       if (!model) return;
       const targets = linkTargets ?? [];
       const decorations: monaco.editor.IModelDeltaDecoration[] = [];
+      // Tokenize once per scan so word matches inside comments, strings and
+      // regex literals can be skipped; only identifier tokens are references.
+      // Must use the loader's monaco instance: the concerto language is
+      // registered there, not on the bundled monaco-editor import.
+      const tokenLines =
+        targets.length > 0 && monacoInstance
+          ? monacoInstance.editor.tokenize(model.getValue(), model.getLanguageId())
+          : [];
       for (const target of targets) {
         const escaped = target.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const matches = model.findMatches(`\\b${escaped}\\b`, false, true, true, null, false);
@@ -339,13 +418,15 @@ export function Editor({
               },
             };
         for (const m of matches) {
+          const tokenType = tokenTypeAt(tokenLines, m.range.startLineNumber, m.range.startColumn);
+          if (!isReferenceToken(tokenType)) continue;
           decorations.push({ range: m.range, options });
         }
       }
       decorationsRef.current = editor.deltaDecorations(decorationsRef.current, decorations);
     }, LINK_DECORATION_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [value, linkTargets, editorReady]);
+  }, [value, linkTargets, editorReady, monacoInstance]);
 
   // Apply error markers whenever the error prop or monaco instance changes
   useEffect(() => {
