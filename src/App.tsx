@@ -7,6 +7,8 @@ import { OutputTabs } from "./components/OutputTabs";
 import { ConcertoGraphEditor } from "./components/graph/ConcertoGraphEditor";
 import { FormView } from "./components/form/FormView";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useOnboardingTour } from "./hooks/useOnboardingTour";
+import { TOUR_STRINGS } from "./tour/strings";
 import { validateCto, parseCto, buildExternalTypeMap, type GraphContext } from "./utils/graph/ctoToGraph";
 import type { ImportStatement, TypeLinkTarget } from "./utils/graph/types";
 import { parsePlaygroundUrlOptions } from "./utils/urlOptions";
@@ -99,6 +101,20 @@ export default function App() {
   // Do not overwrite a recoverable snapshot until the user chooses Restore or
   // Dismiss on the restore prompt.
   const { lastSaved, saveError, dismissSaveError } = useWorkspacePersistence(models, !showRestore);
+
+  // First-visit onboarding walkthrough. Never auto-start over the restore
+  // prompt, in headless embeds, without the toolbar (most anchors live
+  // there), or when a shared link was opened (the visitor came for the
+  // model, not the interface). The toolbar button re-triggers it any time.
+  const { startTour } = useOnboardingTour({
+    setShowCto,
+    setViewMode,
+    blockAutoStart:
+      showRestore ||
+      _initialUrlOptions.headless ||
+      !_initialUrlOptions.showToolbar ||
+      !!window.location.hash.slice(1),
+  });
 
   function handleRestoreSession() {
     if (_savedSnapshot) {
@@ -485,22 +501,34 @@ export default function App() {
 
           <div style={{ width: 1, height: 20, background: "#4a5568", flexShrink: 0 }} />
 
-          <span className="text-xs text-gray-500 font-medium">Examples:</span>
-          {EXAMPLES.map((ex) => (
-            <button
-              key={ex.label}
-              onClick={() => handleLoadExample(ex.source)}
-              className="text-xs px-2.5 py-1 rounded font-semibold transition-colors"
-              style={{ background: "#4a5568", color: "#e2e8f0", border: "none", cursor: "pointer" }}
-            >
-              {ex.label}
-            </button>
-          ))}
+          <div data-tour="examples" className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 font-medium">Examples:</span>
+            {EXAMPLES.map((ex) => (
+              <button
+                key={ex.label}
+                onClick={() => handleLoadExample(ex.source)}
+                className="text-xs px-2.5 py-1 rounded font-semibold transition-colors"
+                style={{ background: "#4a5568", color: "#e2e8f0", border: "none", cursor: "pointer" }}
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
 
           {/* Right-side controls */}
           <div className="ml-auto flex items-center gap-2">
+            <button
+              data-tour="restart"
+              onClick={startTour}
+              className="text-xs px-2.5 py-1 rounded font-semibold transition-colors"
+              style={{ background: "#4a5568", color: "#e2e8f0", border: "none", cursor: "pointer" }}
+              title={TOUR_STRINGS.restartTour}
+            >
+              {TOUR_STRINGS.tourButton}
+            </button>
+
             {/* Graph / Form / Code mode toggle */}
-            <div className="flex rounded overflow-hidden" style={{ border: "1px solid #4a5568" }}>
+            <div data-tour="view-toggle" className="flex rounded overflow-hidden" style={{ border: "1px solid #4a5568" }}>
               <button
                 onClick={() => setViewMode("graph")}
                 className="text-xs px-3 py-1 font-semibold transition-colors"
@@ -542,6 +570,7 @@ export default function App() {
             </div>
 
             <button
+              data-tour="share"
               onClick={handleShare}
               className="text-xs px-3 py-1 rounded border transition-colors"
               style={{
@@ -570,6 +599,7 @@ export default function App() {
         {/* Left: CTO editor (collapsible) — hidden in form view */}
         {showCto && viewMode !== "form" && (
           <div
+            data-tour="cto-panel"
             className="flex flex-col"
             style={{ width: "35%", borderRight: "1px solid #2d3748", flexShrink: 0 }}
           >
@@ -686,7 +716,7 @@ export default function App() {
         )}
 
         {/* Right: Graph, Form, or Code output */}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <div data-tour="canvas" className="flex-1 flex flex-col min-w-0 min-h-0">
           {viewMode === "form" ? (
             <ErrorBoundary label="Form View" resetKeys={[models]}>
               <FormView
@@ -731,6 +761,7 @@ export default function App() {
             <span className="opacity-80">Last saved: {new Date(lastSaved).toLocaleTimeString()}</span>
           )}
           <a
+            data-tour="docs"
             href="https://concerto.accordproject.org/docs/intro"
             target="_blank"
             rel="noopener noreferrer"
