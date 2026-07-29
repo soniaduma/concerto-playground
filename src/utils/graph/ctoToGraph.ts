@@ -1,6 +1,14 @@
 import type { Node, Edge } from '@xyflow/react';
 import type { Declaration, ConcertoModel, ImportStatement, Property, PropertyValidator, Decorator, IdentifiedKind, ExternalTypeMap } from './types';
-import { PRIMITIVE_TYPES } from './types';
+import {
+  PRIMITIVE_TYPES,
+  NODE_KIND_BY_DECLARATION,
+  GRAPH_NODE_KIND,
+  GRAPH_EDGE_KIND,
+  HANDLE_ID,
+  MAP_VALUE_PROP,
+  propHandleId,
+} from './types';
 import { declarationEqual, stringArrayEqual } from './modelDiff';
 
 import { Parser as ParserModule } from '@accordproject/concerto-cto';
@@ -170,7 +178,7 @@ function parseDeclarations(astDecls: any[]): Declaration[] {
         isAbstract: false,
         properties: [
           { name: '_key', type: keyType, isOptional: false, isArray: false, isRelationship: false, validators: {} },
-          { name: '_value', type: valueType, isOptional: false, isArray: false, isRelationship: false, validators: {} },
+          { name: MAP_VALUE_PROP, type: valueType, isOptional: false, isArray: false, isRelationship: false, validators: {} },
         ],
         enumValues: [],
         mapDeclaration: { keyType, valueType },
@@ -351,7 +359,7 @@ function computeTreeLayout(declarations: Declaration[]): Map<string, { x: number
     }
 
     const props = decl.type === 'map'
-      ? decl.properties.filter((p) => p.name === '_value')
+      ? decl.properties.filter((p) => p.name === MAP_VALUE_PROP)
       : decl.properties;
     for (const prop of props) {
       if (declNames.has(prop.type) && !PRIMITIVE_TYPES.has(prop.type) && prop.type !== decl.name) {
@@ -591,13 +599,10 @@ export function declarationsToGraph(
     !explicitNs && declNames.has(typeName) && !PRIMITIVE_TYPES.has(typeName);
 
   declarations.forEach((decl) => {
-    let nodeType = 'conceptNode';
-    if (decl.type === 'enum') nodeType = 'enumNode';
-    else if (decl.type === 'map') nodeType = 'mapNode';
-    else if (decl.type === 'scalar') nodeType = 'scalarNode';
+    const nodeType = NODE_KIND_BY_DECLARATION[decl.type];
 
     const propsToEdge = decl.type === 'map'
-      ? decl.properties.filter((p) => p.name === '_value')
+      ? decl.properties.filter((p) => p.name === MAP_VALUE_PROP)
       : decl.properties;
     // Resolve each property's edge target once and reuse it for both the
     // node's edgeProperties list and the edge-building loop below.
@@ -651,9 +656,9 @@ export function declarationsToGraph(
         edges.push(reuseEdge(prevEdgeById.get(`${decl.name}-extends-${superTarget}`), {
           id: `${decl.name}-extends-${superTarget}`,
           source: decl.name, target: superTarget,
-          sourceHandle: 'bottom',
-          targetHandle: 'top',
-          type: 'floating', animated: true,
+          sourceHandle: HANDLE_ID.bottom,
+          targetHandle: HANDLE_ID.top,
+          type: GRAPH_EDGE_KIND.floating, animated: true,
           label: 'extends',
           style: { stroke: '#b794f4', strokeWidth: 1.5, opacity: 0.7, animationDirection: 'reverse' },
           labelStyle: { fill: '#b794f4', fontSize: 10, fontWeight: 600 },
@@ -671,10 +676,10 @@ export function declarationsToGraph(
         edges.push(reuseEdge(prevEdgeById.get(`${decl.name}-${prop.name}-${propTarget}`), {
           id: `${decl.name}-${prop.name}-${propTarget}`,
           source: decl.name, target: propTarget,
-          sourceHandle: `prop:${prop.name}`,
-          targetHandle: 'left',
+          sourceHandle: propHandleId(prop.name),
+          targetHandle: HANDLE_ID.left,
           label: prop.name.startsWith('_') ? '' : prop.name + (prop.isArray ? '[]' : ''),
-          type: 'floating',
+          type: GRAPH_EDGE_KIND.floating,
           style: {
             stroke: isRel ? '#fc8181' : '#90cdf4',
             strokeWidth: isRel ? 1.5 : 1.2,
@@ -714,7 +719,7 @@ export function declarationsToGraph(
         | undefined;
       if (
         prev &&
-        prev.type === 'importedNode' &&
+        prev.type === GRAPH_NODE_KIND.imported &&
         prevData?.label === ext.name &&
         prevData?.namespace === ext.namespace &&
         prevData?.resolved === ext.resolved
@@ -724,7 +729,7 @@ export function declarationsToGraph(
         const saved = context?.savedPositions?.get(ext.id);
         nodes.push({
           id: ext.id,
-          type: 'importedNode',
+          type: GRAPH_NODE_KIND.imported,
           position: saved ?? prev?.position ?? { x: externalX, y },
           data: { label: ext.name, namespace: ext.namespace, resolved: ext.resolved },
         });

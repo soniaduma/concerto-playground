@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
+import { HANDLE_ID } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge } from './KindBadge';
 import { nodePropsEqual } from './nodeMemo';
@@ -21,9 +22,9 @@ function EnumNodeComponent({ data, selected }: { data: EnumNodeData; selected?: 
 
   return (
     <div className={`graph-node enum-node${selected ? ' selected' : ''}`}>
-      <Handle type="target" position={Position.Top} id="top" className="graph-node-handle enum-node-handle" />
-      <Handle type="target" position={Position.Left} id="left" className="graph-node-handle enum-node-handle" />
-      <Handle type="source" position={Position.Right} id="right" className="graph-node-handle enum-node-handle" />
+      <Handle type="target" position={Position.Top} id={HANDLE_ID.top} className="graph-node-handle enum-node-handle" />
+      <Handle type="target" position={Position.Left} id={HANDLE_ID.left} className="graph-node-handle enum-node-handle" />
+      <Handle type="source" position={Position.Right} id={HANDLE_ID.right} className="graph-node-handle enum-node-handle" />
 
       <div className="enum-node-header">
         <div className="graph-node-header-row">
@@ -61,7 +62,7 @@ function EnumNodeComponent({ data, selected }: { data: EnumNodeData; selected?: 
       </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} id="bottom" className="graph-node-handle enum-node-handle" />
+      <Handle type="source" position={Position.Bottom} id={HANDLE_ID.bottom} className="graph-node-handle enum-node-handle" />
     </div>
   );
 }

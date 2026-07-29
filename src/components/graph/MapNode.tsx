@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
 import type { Declaration } from '../../utils/graph/types';
+import { HANDLE_ID, MAP_VALUE_PROP, propHandleId } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge } from './KindBadge';
 import { nodePropsEqual } from './nodeMemo';
@@ -15,7 +16,7 @@ interface MapNodeData {
 function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: boolean }) {
   const { declaration } = data;
   const map = declaration.mapDeclaration;
-  const hasValueEdge = (data.edgeProperties ?? []).includes('_value');
+  const hasValueEdge = (data.edgeProperties ?? []).includes(MAP_VALUE_PROP);
   const showFull = useStore((s) => s.transform[2] >= SEMANTIC_ZOOM_THRESHOLD);
 
   return (
@@ -29,9 +30,9 @@ function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: bo
         : '0 4px 16px rgba(0,0,0,0.3)',
       transition: 'border-color 0.2s, box-shadow 0.2s',
     }}>
-      <Handle type="target" position={Position.Top} id="top" style={handleStyle} />
-      <Handle type="target" position={Position.Left} id="left" style={handleStyle} />
-      <Handle type="source" position={Position.Right} id="right" style={handleStyle} />
+      <Handle type="target" position={Position.Top} id={HANDLE_ID.top} style={handleStyle} />
+      <Handle type="target" position={Position.Left} id={HANDLE_ID.left} style={handleStyle} />
+      <Handle type="source" position={Position.Right} id={HANDLE_ID.right} style={handleStyle} />
 
       <div style={{
         padding: '12px 14px 10px',
@@ -58,7 +59,7 @@ function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: bo
             <Handle
               type="source"
               position={Position.Right}
-              id="prop:_value"
+              id={propHandleId(MAP_VALUE_PROP)}
               style={{ ...rowHandleStyle, top: '50%', opacity: 0 }}
             />
           )}
@@ -84,7 +85,7 @@ function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: bo
                 <Handle
                   type="source"
                   position={Position.Right}
-                  id="prop:_value"
+                  id={propHandleId(MAP_VALUE_PROP)}
                   style={rowHandleStyle}
                 />
               )}
@@ -96,7 +97,7 @@ function MapNodeComponent({ data, selected }: { data: MapNodeData; selected?: bo
       </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} id="bottom" style={handleStyle} />
+      <Handle type="source" position={Position.Bottom} id={HANDLE_ID.bottom} style={handleStyle} />
     </div>
   );
 }

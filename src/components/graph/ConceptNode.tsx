@@ -1,13 +1,14 @@
 import { memo } from 'react';
 import { Handle, Position, useStore } from '@xyflow/react';
-import type { Declaration } from '../../utils/graph/types';
+import type { Declaration, ClassDeclarationType, PrimitiveTypeName } from '../../utils/graph/types';
+import { HANDLE_ID, PRIMITIVE_TYPES, propHandleId } from '../../utils/graph/types';
 import { SEMANTIC_ZOOM_THRESHOLD } from './constants';
 import { KindBadge, HintAnchor } from './KindBadge';
 import { getConceptHint } from '../../utils/conceptHints';
 import { nodePropsEqual } from './nodeMemo';
 import './graph.css';
 
-const TYPE_COLORS: Record<string, string> = {
+const TYPE_COLORS: Record<PrimitiveTypeName, string> = {
   String: '#68d391',
   Integer: '#63b3ed',
   Long: '#63b3ed',
@@ -16,13 +17,18 @@ const TYPE_COLORS: Record<string, string> = {
   DateTime: '#d6bcfa',
 };
 
-const DECL_COLORS: Record<string, { bg: string; accent: string }> = {
+const DECL_COLORS: Record<ClassDeclarationType, { bg: string; accent: string }> = {
   concept: { bg: '#2b4acb', accent: '#5a7af5' },
   asset: { bg: '#276749', accent: '#48bb78' },
   participant: { bg: '#6b46c1', accent: '#9f7aea' },
   event: { bg: '#c53030', accent: '#fc8181' },
   transaction: { bg: '#c05621', accent: '#ed8936' },
 };
+
+/** Property type color: primitives get their palette color, user types the node accent. */
+function propTypeColor(type: string, accent: string): string {
+  return PRIMITIVE_TYPES.has(type) ? TYPE_COLORS[type as PrimitiveTypeName] : accent;
+}
 
 interface ConceptNodeData {
   label: string;
@@ -37,7 +43,7 @@ interface ConceptNodeData {
 
 function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selected?: boolean }) {
   const { declaration } = data;
-  const colors = DECL_COLORS[declaration.type] || DECL_COLORS.concept;
+  const colors = DECL_COLORS[declaration.type as ClassDeclarationType] || DECL_COLORS.concept;
   const edgeProperties = new Set(data.edgeProperties ?? []);
   const showFull = useStore((s) => s.transform[2] >= SEMANTIC_ZOOM_THRESHOLD);
   const propCount = declaration.properties.length;
@@ -45,9 +51,9 @@ function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selec
 
   return (
     <div className={`graph-node concept-node${selected ? ' selected' : ''}`} style={nodeVars}>
-      <Handle type="target" position={Position.Top} id="top" className="graph-node-handle" style={{ background: colors.accent }} />
-      <Handle type="target" position={Position.Left} id="left" className="graph-node-handle" style={{ background: colors.accent }} />
-      <Handle type="source" position={Position.Right} id="right" className="graph-node-handle" style={{ background: colors.accent }} />
+      <Handle type="target" position={Position.Top} id={HANDLE_ID.top} className="graph-node-handle" style={{ background: colors.accent }} />
+      <Handle type="target" position={Position.Left} id={HANDLE_ID.left} className="graph-node-handle" style={{ background: colors.accent }} />
+      <Handle type="source" position={Position.Right} id={HANDLE_ID.right} className="graph-node-handle" style={{ background: colors.accent }} />
 
       <div className="concept-node-header">
         <div className="graph-node-header-row">
@@ -121,7 +127,7 @@ function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selec
               key={`compact:${p}`}
               type="source"
               position={Position.Right}
-              id={`prop:${p}`}
+              id={propHandleId(p)}
               className="graph-node-handle graph-node-row-handle"
               style={{
                 background: colors.accent,
@@ -141,7 +147,7 @@ function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selec
               <Handle
                 type="source"
                 position={Position.Right}
-                id={`prop:${prop.name}`}
+                id={propHandleId(prop.name)}
                 className="graph-node-handle graph-node-row-handle"
                 style={{ background: colors.accent }}
               />
@@ -149,7 +155,7 @@ function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selec
             {prop.isRelationship && (
               <span className="concept-node-rel-arrow">&#8594;</span>
             )}
-            <span className="concept-node-prop-type" style={{ color: TYPE_COLORS[prop.type] || colors.accent }}>
+            <span className="concept-node-prop-type" style={{ color: propTypeColor(prop.type, colors.accent) }}>
               {prop.type}{prop.isArray ? '[]' : ''}
             </span>
             <span className="concept-node-prop-name">{prop.name}</span>
@@ -183,7 +189,7 @@ function ConceptNodeComponent({ data, selected }: { data: ConceptNodeData; selec
       </div>
       )}
 
-      <Handle type="source" position={Position.Bottom} id="bottom" className="graph-node-handle" style={{ background: colors.accent }} />
+      <Handle type="source" position={Position.Bottom} id={HANDLE_ID.bottom} className="graph-node-handle" style={{ background: colors.accent }} />
     </div>
   );
 }
